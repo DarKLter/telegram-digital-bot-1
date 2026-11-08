@@ -19,7 +19,7 @@ from telegram.ext import (
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN", "9118312201:AAFvZ6-cRZZCZqtbSz9dXTChxKYIKkTt9e8")
 
 # Add your Telegram User ID here to grant global owner access
-OWNER_IDS = [123456789]  # Replace with your actual numerical Telegram User ID
+OWNER_IDS = [5331007152]  # Replace with your actual numerical Telegram User ID
 
 CONFIG_FILE = "bot_config.json"
 STATE_FILE = "vault_state.json"
