@@ -5,12 +5,13 @@ import asyncio
 import re
 from flask import Flask, request, jsonify
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
+    ChatMemberHandler,
     ContextTypes,
     filters,
 )
@@ -26,7 +27,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Master Bot Owner Telegram IDs (Super Admins with Global Inspection & System Rights)
+# Master Bot Owner Telegram IDs (Super Admins with Global System Rights)
 SUPER_ADMIN_IDS = [5331007152]
 
 # Default Tenant Configuration Template for Multi-Tenant Support
@@ -35,7 +36,9 @@ DEFAULT_TENANT_CONFIG = {
     "admin_proof_group_id": 0,
     "proof_archive_id": 0,
     "shop_name": "Digital Vault Store",
+    "primary_owner_id": 0,
     "co_owners": [],
+    "user_id_labels": {},  # { "123456789": "Manager John" }
     "payments": {
         "pay_gcash": "📱 **GCash Payment**\nNumber: `09171234567`\nAccount Name: Admin",
         "pay_maya": "📱 **Maya Payment**\nNumber: `09171234567`\nAccount Name: Admin",
@@ -62,10 +65,10 @@ DEFAULT_GLOBAL_CONFIG = {
     "bot_token": os.getenv("TELEGRAM_TOKEN", "9118312201:AAFvZ6-cRZZCZqtbSz9dXTChxKYIKkTt9e8"),
     "super_admin_ids": SUPER_ADMIN_IDS,
     "settings": {
-        "allow_admin_member_cmds": False,  # If False, /start and /help display Admin Notices to Admins in groups
+        "allow_admin_member_cmds": False,
     },
     "tenants": {},
-    "chat_tenant_map": {}
+    "chat_tenant_map": {}  # Maps { "chat_id": owner_id }
 }
 
 # ================= PERSISTENT STORAGE HELPERS =================
@@ -120,7 +123,6 @@ GLOBAL_CONFIG = load_config()
 VAULT_STATE = load_state()
 PENDING_PROMOTIONS = {}
 
-# Flask App Initialization for Render.com Webhook Hosting
 app = Flask(__name__)
 
 def normalize_title(title: str) -> str:
@@ -130,7 +132,9 @@ def get_tenant_config(owner_id: int):
     owner_str = str(owner_id)
     tenants = GLOBAL_CONFIG.setdefault("tenants", {})
     if owner_str not in tenants:
-        tenants[owner_str] = json.loads(json.dumps(DEFAULT_TENANT_CONFIG))
+        new_tenant = json.loads(json.dumps(DEFAULT_TENANT_CONFIG))
+        new_tenant["primary_owner_id"] = owner_id
+        tenants[owner_str] = new_tenant
         save_config(GLOBAL_CONFIG)
     return tenants[owner_str]
 
@@ -177,10 +181,345 @@ async def is_admin_or_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     return False
 
+# ================= DM SETUP WIZARD & USER ID MANAGEMENT =================
+
+async def setup_wizard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Full setup wizard accessible directly inside DM chat."""
+    msg = update.effective_message
+    user = update.effective_user
+    if not msg or not user:
+        return
+
+    tenant_cfg = get_tenant_config(user.id)
+    shop_name = tenant_cfg.get("shop_name", "Digital Vault Store")
+    hub_id = tenant_cfg.get("main_hub_id", 0)
+    admin_id = tenant_cfg.get("admin_proof_group_id", 0)
+    proof_id = tenant_cfg.get("proof_archive_id", 0)
+    co_owners = tenant_cfg.get("co_owners", [])
+
+    keyboard = [
+        [InlineKeyboardButton("🏨 Manage Connected Rooms", callback_data=f"setup_rooms_{user.id}")],
+        [InlineKeyboardButton("👤 Manage User IDs & Co-Owners", callback_data=f"setup_users_{user.id}")],
+        [InlineKeyboardButton("💳 Payment Accounts Setup", callback_data=f"setup_pay_{user.id}")],
+        [InlineKeyboardButton("💬 Edit System Messages", callback_data=f"setup_msg_{user.id}")],
+        [InlineKeyboardButton("🔍 Open Vault Content Inspector", callback_data="browse_BACK")],
+    ]
+
+    setup_text = (
+        f"⚙️ **FULL DM SETUP WIZARD: {shop_name.upper()}**\n\n"
+        f"👤 **Primary Owner ID:** `{tenant_cfg.get('primary_owner_id', user.id)}`\n"
+        f"👥 **Co-Owners:** `{len(co_owners)} registered`\n\n"
+        "📋 **ACTIVE ROOM STATUS:**\n"
+        f"• 📍 **Main Directory Hub:** `{hub_id if hub_id else 'Not Set'}`\n"
+        f"• 📍 **Admin Verification Group:** `{admin_id if admin_id else 'Not Set'}`\n"
+        f"• 📍 **Proof Archive:** `{proof_id if proof_id else 'Not Set'}`\n\n"
+        "────────────────────────────────────────\n"
+        "💡 _Select an item below to configure your store settings directly inside DM!_"
+    )
+    await msg.reply_text(setup_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def handle_setup_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = query.from_user
+    data = query.data
+
+    tenant_cfg = get_tenant_config(user.id)
+
+    if data.startswith("setup_rooms"):
+        hub_id = tenant_cfg.get("main_hub_id", 0)
+        admin_id = tenant_cfg.get("admin_proof_group_id", 0)
+        proof_id = tenant_cfg.get("proof_archive_id", 0)
+
+        text = (
+            "🏨 **ROOM BINDING SETUP GUIDE**\n\n"
+            "To assign room roles:\n"
+            "1️⃣ Add this bot as an **Admin** in your target group or channel.\n"
+            "2️⃣ Once added, the bot will send you an **Instant DM Alert** with 1-click binding buttons!\n"
+            "3️⃣ Or open the target chat and run:\n"
+            "   • `/sethub` inside your Main Directory Hub\n"
+            "   • `/setadmin` inside your Admin Review Group\n"
+            "   • `/setproof` inside your Proof Archive Channel\n\n"
+            f"📍 Current Hub: `{hub_id}`\n"
+            f"📍 Current Admin Group: `{admin_id}`\n"
+            f"📍 Current Proof Archive: `{proof_id}`"
+        )
+        keyboard = [[InlineKeyboardButton("🔙 Back to Setup Wizard", callback_data=f"setup_main_{user.id}")]]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+    elif data.startswith("setup_users"):
+        co_owners = tenant_cfg.get("co_owners", [])
+        labels = tenant_cfg.get("user_id_labels", {})
+        
+        label_text = ""
+        for u_id, lbl in labels.items():
+            label_text += f"\n• `{u_id}`: {lbl}"
+
+        text = (
+            "👤 **USER ID & CO-OWNER MANAGEMENT**\n\n"
+            f"👑 **Primary Owner ID:** `{tenant_cfg.get('primary_owner_id', user.id)}`\n"
+            f"👥 **Co-Owner User IDs:** `{co_owners if co_owners else 'None'}`\n"
+            f"🏷️ **User ID Labels:** {label_text if label_text else 'None'}\n\n"
+            "────────────────────────────────────────\n"
+            "📝 **DM COMMANDS TO ADJUST USER IDs:**\n"
+            "• `/setowner <USER_ID>` - Transfer primary owner ID\n"
+            "• `/addcoowner <USER_ID>` - Add a co-administrator ID\n"
+            "• `/delcoowner <USER_ID>` - Remove a co-administrator ID\n"
+            "• `/renameowner <USER_ID> <Label>` - Set friendly name for User ID\n"
+            "• `/shopname <New Store Title>` - Rename store title"
+        )
+        keyboard = [[InlineKeyboardButton("🔙 Back to Setup Wizard", callback_data=f"setup_main_{user.id}")]]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+    elif data.startswith("setup_pay"):
+        payments = tenant_cfg.get("payments", {})
+        text = "💳 **CURRENT PAYMENT ACCOUNTS:**\n\n"
+        for k, v in payments.items():
+            text += f"{v}\n\n"
+        text += (
+            "────────────────────────────────────────\n"
+            "📝 **DM COMMANDS TO ADJUST PAYMENTS:**\n"
+            "• `/setpayment gcash <Number> | <Account Name>`\n"
+            "• `/setpayment maya <Number> | <Account Name>`\n"
+            "• `/setpayment bank <Account No> | <Bank Name> | <Account Name>`\n"
+            "• `/addpayment <key> <Button Label> | <Instructions>`\n"
+            "• `/delpayment <key>`"
+        )
+        keyboard = [[InlineKeyboardButton("🔙 Back to Setup Wizard", callback_data=f"setup_main_{user.id}")]]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+    elif data.startswith("setup_msg"):
+        text = (
+            "💬 **CUSTOM MESSAGE TEMPLATES**\n\n"
+            "Configure dynamic tags like `{name}` and `{shop_name}`:\n\n"
+            "• `/setmsg welcome <Text>` - Update welcome checkout text\n"
+            "• `/setmsg help <Text>` - Update member instructions text\n"
+            "• `/setmsg receipt <Text>` - Update receipt acknowledgment text\n"
+            "• `/setmsg welcome reset` - Reset to system defaults"
+        )
+        keyboard = [[InlineKeyboardButton("🔙 Back to Setup Wizard", callback_data=f"setup_main_{user.id}")]]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+    elif data.startswith("setup_main"):
+        shop_name = tenant_cfg.get("shop_name", "Digital Vault Store")
+        hub_id = tenant_cfg.get("main_hub_id", 0)
+        admin_id = tenant_cfg.get("admin_proof_group_id", 0)
+        proof_id = tenant_cfg.get("proof_archive_id", 0)
+        co_owners = tenant_cfg.get("co_owners", [])
+
+        keyboard = [
+            [InlineKeyboardButton("🏨 Manage Connected Rooms", callback_data=f"setup_rooms_{user.id}")],
+            [InlineKeyboardButton("👤 Manage User IDs & Co-Owners", callback_data=f"setup_users_{user.id}")],
+            [InlineKeyboardButton("💳 Payment Accounts Setup", callback_data=f"setup_pay_{user.id}")],
+            [InlineKeyboardButton("💬 Edit System Messages", callback_data=f"setup_msg_{user.id}")],
+            [InlineKeyboardButton("🔍 Open Vault Content Inspector", callback_data="browse_BACK")],
+        ]
+        setup_text = (
+            f"⚙️ **FULL DM SETUP WIZARD: {shop_name.upper()}**\n\n"
+            f"👤 **Primary Owner ID:** `{tenant_cfg.get('primary_owner_id', user.id)}`\n"
+            f"👥 **Co-Owners:** `{len(co_owners)} registered`\n\n"
+            "📋 **ACTIVE ROOM STATUS:**\n"
+            f"• 📍 **Main Directory Hub:** `{hub_id if hub_id else 'Not Set'}`\n"
+            f"• 📍 **Admin Verification Group:** `{admin_id if admin_id else 'Not Set'}`\n"
+            f"• 📍 **Proof Archive:** `{proof_id if proof_id else 'Not Set'}`\n\n"
+            "────────────────────────────────────────\n"
+            "💡 _Select an item below to configure your store settings directly inside DM!_"
+        )
+        await query.edit_message_text(setup_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+# ================= USER ID & STORE MANAGEMENT COMMANDS =================
+
+async def set_owner_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    user = update.effective_user
+    if not msg or not user or not await is_admin_or_owner(update, context):
+        return
+
+    if not context.args:
+        await msg.reply_text("⚠️ **Usage:** `/setowner <NEW_PRIMARY_USER_ID>`", parse_mode="Markdown")
+        return
+
+    try:
+        new_owner_id = int(context.args[0])
+        tenant_cfg = get_tenant_config(user.id)
+        tenant_cfg["primary_owner_id"] = new_owner_id
+        save_config(GLOBAL_CONFIG)
+        await msg.reply_text(f"✅ **Success!** Primary Owner User ID set to `{new_owner_id}`!", parse_mode="Markdown")
+    except ValueError:
+        await msg.reply_text("❌ Invalid User ID. Must be numerical.")
+
+async def add_coowner_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    user = update.effective_user
+    if not msg or not user or not await is_admin_or_owner(update, context):
+        return
+
+    args = context.args
+    if not args:
+        await msg.reply_text("⚠️ **Usage:** `/addcoowner <USER_ID>`", parse_mode="Markdown")
+        return
+
+    try:
+        new_co_id = int(args[0])
+        tenant_cfg = get_tenant_config(user.id)
+        co_list = tenant_cfg.setdefault("co_owners", [])
+        if new_co_id not in co_list:
+            co_list.append(new_co_id)
+            save_config(GLOBAL_CONFIG)
+            await msg.reply_text(f"✅ **Success!** User ID `{new_co_id}` added as Co-Owner!", parse_mode="Markdown")
+        else:
+            await msg.reply_text(f"ℹ️ User ID `{new_co_id}` is already a co-owner.")
+    except ValueError:
+        await msg.reply_text("❌ Invalid User ID. Must be numerical.")
+
+async def del_coowner_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    user = update.effective_user
+    if not msg or not user or not await is_admin_or_owner(update, context):
+        return
+
+    args = context.args
+    if not args:
+        await msg.reply_text("⚠️ **Usage:** `/delcoowner <USER_ID>`", parse_mode="Markdown")
+        return
+
+    try:
+        target_id = int(args[0])
+        tenant_cfg = get_tenant_config(user.id)
+        co_list = tenant_cfg.get("co_owners", [])
+        if target_id in co_list:
+            co_list.remove(target_id)
+            save_config(GLOBAL_CONFIG)
+            await msg.reply_text(f"✅ **Success!** Removed User ID `{target_id}` from Co-Owners!", parse_mode="Markdown")
+        else:
+            await msg.reply_text(f"ℹ️ User ID `{target_id}` was not found in Co-Owners.")
+    except ValueError:
+        await msg.reply_text("❌ Invalid User ID.")
+
+async def rename_owner_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    user = update.effective_user
+    if not msg or not user or not await is_admin_or_owner(update, context):
+        return
+
+    if not context.args or len(context.args) < 2:
+        await msg.reply_text("⚠️ **Usage:** `/renameowner <USER_ID> <Label>`\n_Example:_ `/renameowner 123456789 Admin Juan`", parse_mode="Markdown")
+        return
+
+    try:
+        target_id = str(context.args[0])
+        label = " ".join(context.args[1:]).strip()
+        tenant_cfg = get_tenant_config(user.id)
+        labels = tenant_cfg.setdefault("user_id_labels", {})
+        labels[target_id] = label
+        save_config(GLOBAL_CONFIG)
+        await msg.reply_text(f"✅ User ID `{target_id}` labeled as **{label}**!", parse_mode="Markdown")
+    except Exception as e:
+        await msg.reply_text(f"❌ Error updating label: {e}")
+
+async def set_shop_name_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    user = update.effective_user
+    if not msg or not user or not await is_admin_or_owner(update, context):
+        return
+
+    if not context.args:
+        await msg.reply_text("⚠️ **Usage:** `/shopname <New Store Title>`", parse_mode="Markdown")
+        return
+
+    new_title = " ".join(context.args).strip()
+    tenant_cfg = get_tenant_config(user.id)
+    tenant_cfg["shop_name"] = new_title
+    save_config(GLOBAL_CONFIG)
+    await msg.reply_text(f"✅ **Success!** Store title updated to: **{new_title}**", parse_mode="Markdown")
+
+# ================= AUTO-READY ROOM JOIN HANDLER =================
+
+async def handle_bot_added_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Fired automatically when the bot is added to a new Group, Supergroup, or Channel."""
+    my_chat_member = update.my_chat_member
+    if not my_chat_member:
+        return
+
+    new_status = my_chat_member.new_chat_member.status
+    if new_status not in [ChatMember.ADMINISTRATOR, ChatMember.MEMBER]:
+        return
+
+    chat = my_chat_member.chat
+    installer = my_chat_member.from_user
+
+    GLOBAL_CONFIG.setdefault("chat_tenant_map", {})[str(chat.id)] = installer.id
+    save_config(GLOBAL_CONFIG)
+
+    try:
+        await context.bot.send_message(
+            chat_id=chat.id,
+            text=(
+                f"🤖 **Digital Vault Manager Online & Ready!**\n\n"
+                f"This room (`{chat.title}`) has been automatically linked to **{installer.full_name}** (`{installer.id}`).\n\n"
+                "• Admins can type `/setup` in private DM with the bot or run setup commands here (`/sethub`, `/setadmin`, `/setproof`)."
+            ),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Could not post join welcome in chat {chat.id}: {e}")
+
+    dm_keyboard = [
+        [InlineKeyboardButton("📍 Set as Main Directory Hub", callback_data=f"bindroom_hub_{chat.id}")],
+        [InlineKeyboardButton("📍 Set as Admin Verification Group", callback_data=f"bindroom_admin_{chat.id}")],
+        [InlineKeyboardButton("📍 Set as Proof Archive", callback_data=f"bindroom_proof_{chat.id}")],
+        [InlineKeyboardButton("⚙️ Open DM Setup Wizard", callback_data=f"setup_main_{installer.id}")],
+    ]
+    dm_text = (
+        f"🎉 **BOT ADDED TO ROOM:** `{chat.title}` (`{chat.id}`)\n\n"
+        f"Hello {installer.full_name}! What role would you like to assign to this room?"
+    )
+    try:
+        await context.bot.send_message(
+            chat_id=installer.id,
+            text=dm_text,
+            reply_markup=InlineKeyboardMarkup(dm_keyboard),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Could not send DM to installer {installer.id}: {e}")
+
+async def handle_bind_room_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user = query.from_user
+    data = query.data.split("_")
+    role = data[1]
+    chat_id = int(data[2])
+
+    tenant_cfg = get_tenant_config(user.id)
+    chat_str = str(chat_id)
+
+    GLOBAL_CONFIG.setdefault("chat_tenant_map", {})[chat_str] = user.id
+
+    if role == "hub":
+        tenant_cfg["main_hub_id"] = chat_id
+        role_label = "MAIN DIRECTORY HUB"
+    elif role == "admin":
+        tenant_cfg["admin_proof_group_id"] = chat_id
+        role_label = "ADMIN VERIFICATION GROUP"
+    elif role == "proof":
+        tenant_cfg["proof_archive_id"] = chat_id
+        role_label = "PROOF ARCHIVE"
+    else:
+        role_label = "VAULT CONTENT"
+
+    save_config(GLOBAL_CONFIG)
+    await query.edit_message_text(
+        f"✅ **SUCCESS!** Chat (`{chat_id}`) registered as your **{role_label}**!\n\n"
+        f"The room is 100% configured and ready to perform its duties automatically.",
+        parse_mode="Markdown"
+    )
+
 # ================= MULTI-TENANT USER & SETUP FLOWS =================
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Universal Start Command: Distinguishes between customers and room managers."""
     msg = update.effective_message
     user = update.effective_user
     if not msg or not user:
@@ -193,6 +532,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text(
             "ℹ️ **ADMIN NOTICE**\n\n"
             "Member checkout (`/start`) is currently hidden for admins in group chats.\n"
+            "• Type `/setup` in private DM to open your **Full Setup Wizard**.\n"
             "• Type `/admin` to open your **Admin Control Panel**.",
             parse_mode="Markdown"
         )
@@ -203,14 +543,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = [
         [InlineKeyboardButton("🛒 Browse Store & Buy Access", callback_data=f"mode_customer_{user.id}")],
-        [InlineKeyboardButton("⚙️ Setup & Manage My Own Vault / Groups", callback_data=f"mode_manager_{user.id}")],
+        [InlineKeyboardButton("⚙️ Setup & Manage My Own Vault / Groups", callback_data=f"setup_main_{user.id}")],
     ]
 
     welcome_text = (
         f"👋 **Welcome to {shop_name}, {user.full_name}!**\n\n"
         "How would you like to proceed?\n\n"
         "• Click **Browse Store** to view products and purchase access.\n"
-        "• Click **Setup & Manage My Own Vault** to use this bot for managing your own Telegram channels, groups, payment links, and automated course indexing!"
+        "• Click **Setup & Manage My Own Vault** to configure your channels, groups, payment accounts, user IDs, and automated indexing!"
     )
     await msg.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
@@ -238,31 +578,6 @@ async def handle_mode_switch(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         await query.edit_message_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-    elif data.startswith("mode_manager"):
-        tenant_cfg = get_tenant_config(user.id)
-        hub_id = tenant_cfg.get("main_hub_id", 0)
-        admin_id = tenant_cfg.get("admin_proof_group_id", 0)
-        proof_id = tenant_cfg.get("proof_archive_id", 0)
-
-        manager_text = (
-            f"🛠️ **VAULT MANAGER SELF-SERVICE DESK**\n\n"
-            f"Hello {user.full_name}! You have full control to manage your own Telegram channels, groups, automated indexing, and receipt approvals.\n\n"
-            "📋 **YOUR ACTIVE ROOM CONFIGURATION:**\n"
-            f"• 📍 **Main Hub Directory:** `{hub_id if hub_id else 'Not Set'}`\n"
-            f"• 📍 **Admin Verification Group:** `{admin_id if admin_id else 'Not Set'}`\n"
-            f"• 📍 **Proof Archive:** `{proof_id if proof_id else 'Not Set'}`\n\n"
-            "────────────────────────────────────────\n"
-            "🚀 **HOW TO SETUP YOUR ROOMS:**\n"
-            "1️⃣ Add this bot as an **Administrator** in your target group or channel.\n"
-            "2️⃣ Open your Main Hub Directory channel and type `/sethub`.\n"
-            "3️⃣ Open your Admin Review group and type `/setadmin`.\n"
-            "4️⃣ Open your Proof Archive channel and type `/setproof`.\n"
-            "5️⃣ Setup your payment accounts using `/setpayment gcash <Number> | <Name>`.\n"
-            "6️⃣ Inspect all indexed videos & ebook files anytime using `/viewvault`!\n\n"
-            "💡 Type `/admin` in your group or here anytime to open your full management panel."
-        )
-        await query.edit_message_text(manager_text, parse_mode="Markdown")
-
 async def member_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     user = update.effective_user
@@ -275,8 +590,8 @@ async def member_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     if is_admin and not allow_admin and msg.chat.type != "private":
         await msg.reply_text(
             "ℹ️ **ADMIN NOTICE**\n\n"
-            "Member help instructions (`/help`) are currently hidden for Admins in groups to keep your view clean.\n"
-            "• Type `/admin` to open the **Admin Control Desk**.",
+            "Member help instructions (`/help`) are currently hidden for Admins in groups.\n"
+            "• Type `/setup` in DM to open the **Setup Wizard**.",
             parse_mode="Markdown"
         )
         return
@@ -293,13 +608,15 @@ async def handle_new_chat_members(update: Update, context: ContextTypes.DEFAULT_
 
     for new_member in update.message.new_chat_members:
         if new_member.id == context.bot.id:
+            GLOBAL_CONFIG.setdefault("chat_tenant_map", {})[str(msg.chat.id)] = update.message.from_user.id
+            save_config(GLOBAL_CONFIG)
             await msg.reply_text(
-                "🤖 **Digital Vault Manager Bot Online!**\n\n"
-                "Thank you for adding me to this room! Admins can run setup commands here:\n"
-                "• `/sethub` (or `/sethub remove`) - Bind / Unbind Main Hub Directory\n"
-                "• `/setadmin` (or `/setadmin remove`) - Bind / Unbind Admin Verification Group\n"
-                "• `/setproof` (or `/setproof remove`) - Bind / Unbind Proof Archive\n"
-                "• `/admin` - Open Control Desk",
+                "🤖 **Digital Vault Manager Bot Online & Ready!**\n\n"
+                "Thank you for adding me to this chat! Run setup commands here:\n"
+                "• `/sethub` - Bind as Main Hub Directory\n"
+                "• `/setadmin` - Bind as Admin Verification Group\n"
+                "• `/setproof` - Bind as Proof Archive\n"
+                "• `/setup` - Open Private DM Setup Wizard",
                 parse_mode="Markdown"
             )
             continue
@@ -320,13 +637,11 @@ async def handle_new_chat_members(update: Update, context: ContextTypes.DEFAULT_
             f"📖 **ONBOARDING HELP:**\n"
             f"{help_template}"
         )
-
         await msg.reply_text(full_welcome_text, parse_mode="Markdown")
 
 # ================= TELEGRAM JUMP LINK INSPECTOR FOR REAL OWNER =================
 
 async def open_link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Allows Master Super Admins and Vault Owners to inspect and open any Telegram jump link directly."""
     msg = update.effective_message
     user = update.effective_user
     if not msg or not user:
@@ -347,7 +662,7 @@ async def open_link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text(
             "⚠️ **Usage:** Send or paste a Telegram jump link, e.g.:\n"
             "`/openlink https://t.me/c/123456789/45`\n"
-            "or simply paste the jump link directly in a private DM with the bot!",
+            "or paste the link directly in a private DM with the bot!",
             parse_mode="Markdown"
         )
         return
@@ -393,13 +708,12 @@ async def open_link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🆔 **Message ID:** `{msg_id}`\n"
                 f"📍 **Thread ID:** `{thread_id if thread_id else 'Main Chat'}`\n\n"
                 f"🔗 **Direct Link:** [{full_link}]({full_link})\n\n"
-                f"ℹ️ _Note: Click the link above to view or download the file/video inside Telegram._"
+                f"ℹ️ _Click the link above to view or download the file/video inside Telegram._"
             )
 
         await msg.reply_text(reply_text, parse_mode="Markdown", disable_web_page_preview=False)
 
 async def handle_direct_link_paste(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Automatically detects and inspects Telegram jump links pasted into private DM with the bot."""
     msg = update.effective_message
     if not msg or msg.chat.type != "private":
         return
@@ -612,6 +926,14 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     admin_help_text = (
         f"🛠️ **ADMIN CONTROL DESK: {shop_name.upper()}**\n\n"
+        "⚙️ **Full Private DM Setup Wizard:**\n"
+        "• `/setup` - Interactive Control Panel inside private DM\n\n"
+        "👤 **User ID & Store Management:**\n"
+        "• `/setowner <USER_ID>` - Transfer primary tenant owner ID\n"
+        "• `/addcoowner <USER_ID>` - Add a co-administrator ID\n"
+        "• `/delcoowner <USER_ID>` - Remove a co-administrator ID\n"
+        "• `/renameowner <USER_ID> <Label>` - Label a User ID\n"
+        "• `/shopname <Name>` - Change store title\n\n"
         "🤖 **Bot Profile Commands:**\n"
         "• `/setbotname <Name>` - Change bot display name live\n"
         "• `/setbotusername` - View current username & change guide\n\n"
@@ -628,41 +950,9 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/delpayment <key>`\n\n"
         "💬 **Custom Messages & Settings:**\n"
         "• `/setmsg welcome|help|receipt <Text|reset>`\n"
-        "• `/setconfig shop_name <New Name>` - Change your shop title\n"
-        "• `/addcoowner <User_ID>` - Add co-administrator ID\n\n"
-        "📢 **Content & Group Moderation:**\n"
-        "• `/promote <Message>` - Broadcast promotional posts\n"
-        "• `/groupmodule <Category> <Title> | <Items>`\n"
-        "• `/renameitem <Category> <Old> | <New>`\n"
-        "• `/addbadword <word>` - Add word to group auto-moderation\n"
-        "• `/delindex` - Remove course module from index\n"
         "• `/config` - View active configuration audit"
     )
     await msg.reply_text(admin_help_text, parse_mode="Markdown")
-
-async def add_coowner_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.effective_message
-    user = update.effective_user
-    if not msg or not user or not await is_admin_or_owner(update, context):
-        return
-
-    args = context.args
-    if not args:
-        await msg.reply_text("⚠️ **Usage:** `/addcoowner <USER_ID>`", parse_mode="Markdown")
-        return
-
-    try:
-        new_co_id = int(args[0])
-        tenant_cfg = get_tenant_config(user.id)
-        co_list = tenant_cfg.setdefault("co_owners", [])
-        if new_co_id not in co_list:
-            co_list.append(new_co_id)
-            save_config(GLOBAL_CONFIG)
-            await msg.reply_text(f"✅ **Success!** Added User ID `{new_co_id}` as Co-Owner for your store!", parse_mode="Markdown")
-        else:
-            await msg.reply_text(f"ℹ️ User ID `{new_co_id}` is already a co-owner.")
-    except ValueError:
-        await msg.reply_text("❌ Invalid User ID format. Must be numerical.")
 
 async def set_bot_name_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin_or_owner(update, context):
@@ -800,7 +1090,7 @@ async def handle_photo_receipt(update: Update, context: ContextTypes.DEFAULT_TYP
 
     admin_group_id = tenant_cfg.get("admin_proof_group_id")
     if not admin_group_id:
-        await update.message.reply_text("⚠️ Payment group is not configured for this vault. Ask the owner to run `/setadmin` in their verification group.")
+        await update.message.reply_text("⚠️ Payment group is not configured for this vault. Run `/setadmin` in your admin verification group.")
         return
 
     keyboard = [
@@ -1236,29 +1526,6 @@ async def handle_promotion_callback(update: Update, context: ContextTypes.DEFAUL
 
     await query.edit_message_text(f"🚀 Promotion sent to {sent_count} target location(s)!")
 
-async def set_config_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.effective_message
-    user = update.effective_user
-    if not msg or not user or not await is_admin_or_owner(update, context):
-        return
-
-    args = context.args
-    if not args or len(args) < 2:
-        await msg.reply_text("⚠️ **Usage:** `/setconfig shop_name Digital Vault Store`", parse_mode="Markdown")
-        return
-
-    key = args[0]
-    val = " ".join(args[1:])
-    tenant_cfg = get_tenant_config(user.id)
-
-    if key == "allow_admin_member_cmds":
-        GLOBAL_CONFIG.setdefault("settings", {})[key] = (val.lower() == "true")
-    else:
-        tenant_cfg[key] = val
-
-    save_config(GLOBAL_CONFIG)
-    await msg.reply_text(f"✅ Updated setting `{key}` = `{val}`!", parse_mode="Markdown")
-
 async def view_config_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     user = update.effective_user
@@ -1269,6 +1536,7 @@ async def view_config_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     conf_text = (
         f"📋 **YOUR VAULT CONFIGURATION AUDIT:**\n\n"
         f"📛 **Shop Name:** `{tenant_cfg.get('shop_name')}`\n"
+        f"👑 **Primary Owner ID:** `{tenant_cfg.get('primary_owner_id', user.id)}`\n"
         f"📍 **Main Hub ID:** `{tenant_cfg.get('main_hub_id')}`\n"
         f"📍 **Admin Proof Group ID:** `{tenant_cfg.get('admin_proof_group_id')}`\n"
         f"📍 **Proof Archive ID:** `{tenant_cfg.get('proof_archive_id')}`\n\n"
@@ -1282,10 +1550,18 @@ async def view_config_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 ACTIVE_BOT_TOKEN = GLOBAL_CONFIG.get("bot_token", "9118312201:AAFvZ6-cRZZCZqtbSz9dXTChxKYIKkTt9e8")
 bot_app = ApplicationBuilder().token(ACTIVE_BOT_TOKEN).build()
 
-# Core Onboarding & User Commands
+# Core Onboarding & DM Setup Commands
 bot_app.add_handler(CommandHandler("start", start_command))
 bot_app.add_handler(CommandHandler("help", member_help_command))
+bot_app.add_handler(CommandHandler(["setup", "setting", "settings"], setup_wizard_command))
 bot_app.add_handler(CommandHandler("admin", admin_panel))
+
+# User ID & Store Management Commands
+bot_app.add_handler(CommandHandler("setowner", set_owner_command))
+bot_app.add_handler(CommandHandler("addcoowner", add_coowner_command))
+bot_app.add_handler(CommandHandler("delcoowner", del_coowner_command))
+bot_app.add_handler(CommandHandler("renameowner", rename_owner_command))
+bot_app.add_handler(CommandHandler(["shopname", "setshopname"], set_shop_name_command))
 
 # File & Jump Link Inspection Commands
 bot_app.add_handler(CommandHandler("viewvault", view_vault_command))
@@ -1299,7 +1575,6 @@ bot_app.add_handler(CommandHandler("setbotusername", set_bot_username_command))
 bot_app.add_handler(CommandHandler(["sethub", "unsethub", "delhub"], set_hub_command))
 bot_app.add_handler(CommandHandler(["setadmin", "unsetadmin", "deladmin"], set_admin_group_command))
 bot_app.add_handler(CommandHandler(["setproof", "unsetproof", "delproof"], set_proof_archive_command))
-bot_app.add_handler(CommandHandler("addcoowner", add_coowner_command))
 
 # Content & Moderation Management Commands
 bot_app.add_handler(CommandHandler("promote", promote_command))
@@ -1313,10 +1588,12 @@ bot_app.add_handler(CommandHandler("setmsg", set_msg_command))
 bot_app.add_handler(CommandHandler("setpayment", set_payment_command))
 bot_app.add_handler(CommandHandler("addpayment", add_payment_command))
 bot_app.add_handler(CommandHandler("delpayment", del_payment_command))
-bot_app.add_handler(CommandHandler("setconfig", set_config_command))
 bot_app.add_handler(CommandHandler("config", view_config_command))
 
-# Callback Query & Message Handlers
+# Auto-Ready Room Join Handlers & Callbacks
+bot_app.add_handler(ChatMemberHandler(handle_bot_added_to_chat, ChatMemberHandler.MY_CHAT_MEMBER))
+bot_app.add_handler(CallbackQueryHandler(handle_setup_callbacks, pattern="^setup_"))
+bot_app.add_handler(CallbackQueryHandler(handle_bind_room_callback, pattern="^bindroom_"))
 bot_app.add_handler(CallbackQueryHandler(handle_mode_switch, pattern="^mode_"))
 bot_app.add_handler(CallbackQueryHandler(handle_vault_browser_callback, pattern="^(browsechat_|browsetit_|browse_)"))
 bot_app.add_handler(CallbackQueryHandler(handle_del_index_callback, pattern="^delmod_"))
@@ -1349,7 +1626,7 @@ def webhook():
 
 @app.route("/", methods=["GET"])
 def health_check():
-    return "Multi-Tenant Bot Server Active", 200
+    return "Multi-Tenant Bot Server Active & Ready", 200
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
