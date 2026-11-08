@@ -47,20 +47,24 @@ DEFAULT_TENANT_CONFIG = {
     "messages": {
         "welcome": "👋 **Welcome to {shop_name}, {name}!**\n\nGet access to our complete library of courses and ebooks.\n\nPlease select your preferred payment method below:",
         "help": (
-            "📖 **MEMBER GUIDE: HOW TO BUY & USE THE DIGITAL VAULT**\n\n"
-            "Welcome **{name}** to **{shop_name}**! Here is your step-by-step guide on how to purchase course access, submit receipt screenshots, and navigate our library:\n\n"
-            "─── 🛒 **STEP-BY-STEP PURCHASING GUIDE** ───\n"
+            "📖 **USER GUIDE: HOW TO BUY & NAVIGATE THE DIGITAL VAULT**\n\n"
+            "Welcome **{name}** to **{shop_name}**!\n\n"
+            "ℹ️ **ACCESS NOTICE:**\n"
+            "• **Regular Members:** You can use `/start` to browse/checkout and `/help` for instructions.\n"
+            "• **Administrators & Owners:** Advanced configuration commands (`/admin`, `/setup`, `/sethub`, `/setadmin`, `/setproof`, `/config`, etc.) are strictly restricted to verified Admins and Owners.\n\n"
+            "─── 🛒 **STEP-BY-STEP PURCHASING GUIDE FOR MEMBERS** ───\n"
             "1️⃣ **Start Checkout:** Type `/start` in private DM (or click *Browse Store & Buy Access*).\n"
             "2️⃣ **Select Payment Method:** Choose your preferred payment option (GCash, Maya, MariBank, or Bank Transfer).\n"
             "3️⃣ **Make Transfer:** Send the exact amount using the provided account details and reference number.\n"
             "4️⃣ **Submit Receipt:** Take a photo or screenshot of your successful transaction receipt and send it directly to this chat.\n"
-            "5️⃣ **Instant Single-Use Link:** Our admin team will verify your receipt. Once approved, the bot will automatically send you a private single-use invite link to the Main Directory Hub!\n\n"
+            "5️⃣ **Receive Single-Use Link:** Our admin team will verify your receipt. Once approved, the bot will automatically send you a private single-use invite link to the Main Directory Hub!\n\n"
             "─── 📚 **NAVIGATING COURSES & VAULTS** ───\n"
             "• Join the **Main Directory Hub** using your unique invite link.\n"
             "• Inside the hub, click any **[Lesson Link]** or **[Ebook Link]** to jump directly to your course material inside our vault channels!\n\n"
-            "─── ⚙️ **STORE OWNERS & MANAGERS** ───\n"
-            "• Want to use this bot to manage your own groups and channels? Type `/setup` in private DM to open the Setup Wizard!\n"
-            "• Type `/admin` for administrator management features."
+            "─── ⚙️ **FOR STORE OWNERS & ADMINISTRATORS ONLY** ───\n"
+            "• Type `/setup` in private DM to open the Setup Wizard.\n"
+            "• Type `/admin` to open your **Admin Control Desk**.\n"
+            "• Run `/sethub`, `/setadmin`, or `/setproof` inside target chats to bind or unbind system rooms."
         ),
         "receipt": "⌛ **Receipt Submitted!**\n\nThank you {name}. Our admin team is verifying your payment. Once approved, you will automatically receive your invite link here!"
     },
@@ -228,8 +232,9 @@ async def member_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     keyboard = [
         [InlineKeyboardButton("🛒 Start Buying & Checkout Now", callback_data=f"mode_customer_{tenant_cfg.get('primary_owner_id', user.id)}")],
-        [InlineKeyboardButton("⚙️ Manager Setup Wizard", callback_data=f"setup_main_{user.id}")],
     ]
+    if is_admin:
+        keyboard.append([InlineKeyboardButton("⚙️ Manager Setup Wizard", callback_data=f"setup_main_{user.id}")])
 
     await msg.reply_text(help_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
@@ -258,15 +263,16 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🛒 Browse Store & Buy Access", callback_data=f"mode_customer_{user.id}")],
         [InlineKeyboardButton("📖 Read How to Buy (/help)", callback_data=f"show_help_cb_{user.id}")],
-        [InlineKeyboardButton("⚙️ Setup & Manage My Own Vault / Groups", callback_data=f"setup_main_{user.id}")],
     ]
+    if is_admin or msg.chat.type == "private":
+        keyboard.append([InlineKeyboardButton("⚙️ Setup & Manage My Own Vault / Groups", callback_data=f"setup_main_{user.id}")])
 
     welcome_text = (
         f"👋 **Welcome to {shop_name}, {user.full_name}!**\n\n"
         "How would you like to proceed?\n\n"
         "• Click **Browse Store** to view available payment methods and buy access.\n"
         "• Click **Read How to Buy** for step-by-step instructions.\n"
-        "• Click **Setup & Manage My Own Vault** to configure your channels, groups, payment accounts, and user IDs!"
+        "ℹ️ _Note: Regular members can only use `/start` and `/help`. Advanced management features (`/admin`, `/sethub`, etc.) are restricted to Administrators & Owners._"
     )
     await msg.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
@@ -318,6 +324,14 @@ async def setup_wizard_command(update: Update, context: ContextTypes.DEFAULT_TYP
     if not msg or not user:
         return
 
+    if not await is_admin_or_owner(update, context):
+        await msg.reply_text(
+            "⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\n"
+            "Advanced management features (like `/setup`, `/admin`, `/sethub`) are strictly restricted to Administrators and Vault Owners.",
+            parse_mode="Markdown"
+        )
+        return
+
     tenant_cfg = get_tenant_config(user.id)
     shop_name = tenant_cfg.get("shop_name", "Digital Vault Store")
     hub_id = tenant_cfg.get("main_hub_id", 0)
@@ -348,6 +362,10 @@ async def setup_wizard_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def handle_setup_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    if not await is_admin_or_owner(update, context):
+        await query.answer("⛔ Access Denied: Administrator or Owner permission required.", show_alert=True)
+        return
+
     await query.answer()
     user = query.from_user
     data = query.data
@@ -365,9 +383,9 @@ async def handle_setup_callbacks(update: Update, context: ContextTypes.DEFAULT_T
             "1️⃣ Add this bot as an **Admin** in your target group or channel.\n"
             "2️⃣ Once added, the bot will send you an **Instant DM Alert** with 1-click binding buttons!\n"
             "3️⃣ Or open the target chat and run:\n"
-            "   • `/sethub` inside your Main Directory Hub\n"
-            "   • `/setadmin` inside your Admin Review Group\n"
-            "   • `/setproof` inside your Proof Archive Channel\n\n"
+            "   • `/sethub` inside your Main Directory Hub (run again to remove)\n"
+            "   • `/setadmin` inside your Admin Review Group (run again to remove)\n"
+            "   • `/setproof` inside your Proof Archive Channel (run again to remove)\n\n"
             f"📍 Current Hub: `{hub_id}`\n"
             f"📍 Current Admin Group: `{admin_id}`\n"
             f"📍 Current Proof Archive: `{proof_id}`"
@@ -460,7 +478,11 @@ async def handle_setup_callbacks(update: Update, context: ContextTypes.DEFAULT_T
 async def set_owner_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     user = update.effective_user
-    if not msg or not user or not await is_admin_or_owner(update, context):
+    if not msg or not user:
+        return
+
+    if not await is_admin_or_owner(update, context):
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdvanced management features are strictly restricted to Administrators and Vault Owners.", parse_mode="Markdown")
         return
 
     if not context.args:
@@ -479,7 +501,11 @@ async def set_owner_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def add_coowner_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     user = update.effective_user
-    if not msg or not user or not await is_admin_or_owner(update, context):
+    if not msg or not user:
+        return
+
+    if not await is_admin_or_owner(update, context):
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdvanced management features are strictly restricted to Administrators and Vault Owners.", parse_mode="Markdown")
         return
 
     args = context.args
@@ -503,7 +529,11 @@ async def add_coowner_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def del_coowner_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     user = update.effective_user
-    if not msg or not user or not await is_admin_or_owner(update, context):
+    if not msg or not user:
+        return
+
+    if not await is_admin_or_owner(update, context):
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdvanced management features are strictly restricted to Administrators and Vault Owners.", parse_mode="Markdown")
         return
 
     args = context.args
@@ -527,7 +557,11 @@ async def del_coowner_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def rename_owner_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     user = update.effective_user
-    if not msg or not user or not await is_admin_or_owner(update, context):
+    if not msg or not user:
+        return
+
+    if not await is_admin_or_owner(update, context):
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdvanced management features are strictly restricted to Administrators and Vault Owners.", parse_mode="Markdown")
         return
 
     if not context.args or len(context.args) < 2:
@@ -548,7 +582,11 @@ async def rename_owner_command(update: Update, context: ContextTypes.DEFAULT_TYP
 async def set_shop_name_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     user = update.effective_user
-    if not msg or not user or not await is_admin_or_owner(update, context):
+    if not msg or not user:
+        return
+
+    if not await is_admin_or_owner(update, context):
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdvanced management features are strictly restricted to Administrators and Vault Owners.", parse_mode="Markdown")
         return
 
     if not context.args:
@@ -613,8 +651,11 @@ async def handle_bot_added_to_chat(update: Update, context: ContextTypes.DEFAULT
 
 async def handle_bind_room_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    if not await is_admin_or_owner(update, context):
+        await query.answer("⛔ Access Denied: Administrator or Owner permission required.", show_alert=True)
+        return
 
+    await query.answer()
     user = query.from_user
     data = query.data.split("_")
     role = data[1]
@@ -656,9 +697,9 @@ async def handle_new_chat_members(update: Update, context: ContextTypes.DEFAULT_
             await msg.reply_text(
                 "🤖 **Digital Vault Manager Bot Online & Ready!**\n\n"
                 "Thank you for adding me to this chat! Run setup commands here:\n"
-                "• `/sethub` - Bind as Main Hub Directory\n"
-                "• `/setadmin` - Bind as Admin Verification Group\n"
-                "• `/setproof` - Bind as Proof Archive\n"
+                "• `/sethub` - Bind as Main Hub Directory (run again to remove)\n"
+                "• `/setadmin` - Bind as Admin Verification Group (run again to remove)\n"
+                "• `/setproof` - Bind as Proof Archive (run again to remove)\n"
                 "• `/setup` - Open Private DM Setup Wizard",
                 parse_mode="Markdown"
             )
@@ -691,7 +732,7 @@ async def open_link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not await is_admin_or_owner(update, context):
-        await msg.reply_text("⛔ **Access Denied:** Only administrators or vault owners can inspect links.")
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nOnly administrators or vault owners can inspect links.", parse_mode="Markdown")
         return
 
     text = msg.text or ""
@@ -763,7 +804,8 @@ async def handle_direct_link_paste(update: Update, context: ContextTypes.DEFAULT
 
     text = msg.text or ""
     if "t.me/c/" in text:
-        await open_link_command(update, context)
+        if await is_admin_or_owner(update, context):
+            await open_link_command(update, context)
 
 # ================= VAULT CONTENT INSPECTOR & FILE BROWSER =================
 
@@ -774,7 +816,7 @@ async def view_vault_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     if not await is_admin_or_owner(update, context):
-        await msg.reply_text("⛔ **Access Denied:** Administrator or Vault Owner permission required.")
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator or Vault Owner permission required.", parse_mode="Markdown")
         return
 
     if not VAULT_STATE:
@@ -794,8 +836,11 @@ async def view_vault_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def handle_vault_browser_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    if not await is_admin_or_owner(update, context):
+        await query.answer("⛔ Access Denied: Administrator or Owner permission required.", show_alert=True)
+        return
 
+    await query.answer()
     data = query.data
     if data.startswith("browsechat_"):
         chat_id = int(data.replace("browsechat_", ""))
@@ -862,7 +907,7 @@ async def set_hub_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not await is_admin_or_owner(update, context):
-        await msg.reply_text("⛔ **Access Denied:** Only administrators or room owners can set room roles.")
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nOnly administrators or room owners can set room roles.", parse_mode="Markdown")
         return
 
     tenant_cfg = get_tenant_config(user.id)
@@ -895,7 +940,7 @@ async def set_admin_group_command(update: Update, context: ContextTypes.DEFAULT_
         return
 
     if not await is_admin_or_owner(update, context):
-        await msg.reply_text("⛔ **Access Denied:** Administrator permission required.")
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
         return
 
     tenant_cfg = get_tenant_config(user.id)
@@ -928,7 +973,7 @@ async def set_proof_archive_command(update: Update, context: ContextTypes.DEFAUL
         return
 
     if not await is_admin_or_owner(update, context):
-        await msg.reply_text("⛔ **Access Denied:** Administrator permission required.")
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
         return
 
     tenant_cfg = get_tenant_config(user.id)
@@ -961,7 +1006,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not await is_admin_or_owner(update, context):
-        await msg.reply_text("⛔ **Access Denied:** Only administrators or vault owners can access this panel.")
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nOnly administrators or vault owners can access this panel.", parse_mode="Markdown")
         return
 
     tenant_cfg = get_tenant_config(user.id)
@@ -999,7 +1044,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def set_bot_name_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin_or_owner(update, context):
-        await update.message.reply_text("⛔ **Access Denied:** Administrator permission required.")
+        await update.message.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
         return
 
     if not context.args:
@@ -1016,7 +1061,7 @@ async def set_bot_name_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def set_bot_username_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin_or_owner(update, context):
-        await update.message.reply_text("⛔ **Access Denied:** Administrator permission required.")
+        await update.message.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
         return
 
     bot_info = await context.bot.get_me()
@@ -1038,7 +1083,11 @@ async def set_bot_username_command(update: Update, context: ContextTypes.DEFAULT
 async def set_payment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     user = update.effective_user
-    if not msg or not user or not await is_admin_or_owner(update, context):
+    if not msg or not user:
+        return
+
+    if not await is_admin_or_owner(update, context):
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
         return
 
     args = context.args
@@ -1064,7 +1113,11 @@ async def set_payment_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def add_payment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     user = update.effective_user
-    if not msg or not user or not await is_admin_or_owner(update, context):
+    if not msg or not user:
+        return
+
+    if not await is_admin_or_owner(update, context):
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
         return
 
     args = context.args
@@ -1087,7 +1140,11 @@ async def add_payment_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def del_payment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     user = update.effective_user
-    if not msg or not user or not await is_admin_or_owner(update, context):
+    if not msg or not user:
+        return
+
+    if not await is_admin_or_owner(update, context):
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
         return
 
     args = context.args
@@ -1241,6 +1298,10 @@ async def security_threat_detector(update: Update, context: ContextTypes.DEFAULT
 
 async def handle_security_kick_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    if not await is_admin_or_owner(update, context):
+        await query.answer("⛔ Access Denied: Administrator or Owner permission required.", show_alert=True)
+        return
+
     await query.answer()
 
     data = query.data.split("_")
@@ -1294,7 +1355,11 @@ async def group_moderation_guard(update: Update, context: ContextTypes.DEFAULT_T
 async def add_bad_word_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     user = update.effective_user
-    if not msg or not user or not await is_admin_or_owner(update, context):
+    if not msg or not user:
+        return
+
+    if not await is_admin_or_owner(update, context):
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
         return
 
     if not context.args:
@@ -1396,7 +1461,11 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def group_module_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     user = update.effective_user
-    if not msg or not user or not await is_admin_or_owner(update, context):
+    if not msg or not user:
+        return
+
+    if not await is_admin_or_owner(update, context):
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
         return
 
     if not context.args:
@@ -1429,7 +1498,11 @@ async def group_module_command(update: Update, context: ContextTypes.DEFAULT_TYP
 async def rename_item_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     user = update.effective_user
-    if not msg or not user or not await is_admin_or_owner(update, context):
+    if not msg or not user:
+        return
+
+    if not await is_admin_or_owner(update, context):
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
         return
 
     payload = " ".join(context.args)
@@ -1453,7 +1526,11 @@ async def rename_item_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def del_index_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     user = update.effective_user
-    if not msg or not user or not await is_admin_or_owner(update, context):
+    if not msg or not user:
+        return
+
+    if not await is_admin_or_owner(update, context):
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
         return
 
     if not VAULT_STATE:
@@ -1471,6 +1548,10 @@ async def del_index_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_del_index_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    if not await is_admin_or_owner(update, context):
+        await query.answer("⛔ Access Denied: Administrator or Owner permission required.", show_alert=True)
+        return
+
     await query.answer()
 
     parts = query.data.split("_", 2)
@@ -1496,7 +1577,11 @@ async def handle_del_index_callback(update: Update, context: ContextTypes.DEFAUL
 async def set_msg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     user = update.effective_user
-    if not msg or not user or not await is_admin_or_owner(update, context):
+    if not msg or not user:
+        return
+
+    if not await is_admin_or_owner(update, context):
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
         return
 
     args = context.args
@@ -1520,7 +1605,11 @@ async def set_msg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def promote_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     user = update.effective_user
-    if not msg or not user or not await is_admin_or_owner(update, context):
+    if not msg or not user:
+        return
+
+    if not await is_admin_or_owner(update, context):
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
         return
 
     args = context.args
@@ -1543,6 +1632,10 @@ async def promote_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_promotion_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    if not await is_admin_or_owner(update, context):
+        await query.answer("⛔ Access Denied: Administrator or Owner permission required.", show_alert=True)
+        return
+
     await query.answer()
 
     user_id = query.from_user.id
@@ -1572,7 +1665,11 @@ async def handle_promotion_callback(update: Update, context: ContextTypes.DEFAUL
 async def view_config_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     user = update.effective_user
-    if not msg or not user or not await is_admin_or_owner(update, context):
+    if not msg or not user:
+        return
+
+    if not await is_admin_or_owner(update, context):
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
         return
 
     tenant_cfg = get_tenant_config(user.id)
