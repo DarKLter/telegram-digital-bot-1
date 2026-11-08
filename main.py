@@ -39,32 +39,36 @@ DEFAULT_TENANT_CONFIG = {
     "primary_owner_id": 0,
     "co_owners": [],
     "user_id_labels": {},  # { "123456789": "Manager John" }
+    "indexing_settings": {
+        "auto_index": True,
+        "custom_label": "Lesson",
+    },
     "payments": {
         "pay_gcash": "📱 **GCash Payment**\nNumber: `09171234567`\nAccount Name: Admin",
         "pay_maya": "📱 **Maya Payment**\nNumber: `09171234567`\nAccount Name: Admin",
         "pay_bank": "🏦 **MariBank / Bank Transfer**\nAccount Number: `1234-5678-9012`\nBank: MariBank\nAccount Name: Admin",
     },
     "messages": {
-        "welcome": "👋 **Welcome to {shop_name}, {name}!**\n\nGet access to our complete library of courses and ebooks.\n\nPlease select your preferred payment method below:",
+        "welcome": "👋 **Welcome to {shop_name}, {name}!**\n\nGet access to our complete library of courses, ebooks, software, and files.\n\nPlease select your preferred payment method below:",
         "help": (
-            "📖 **USER GUIDE: HOW TO BUY & NAVIGATE THE DIGITAL VAULT**\n\n"
+            "📖 **MEMBER GUIDE: HOW TO BUY & USE THE DIGITAL VAULT**\n\n"
             "Welcome **{name}** to **{shop_name}**!\n\n"
-            "ℹ️ **ACCESS NOTICE:**\n"
-            "• **Regular Members:** You can use `/start` to browse/checkout and `/help` for instructions.\n"
-            "• **Administrators & Owners:** Advanced configuration commands (`/admin`, `/setup`, `/sethub`, `/setadmin`, `/setproof`, `/config`, etc.) are strictly restricted to verified Admins and Owners.\n\n"
+            "ℹ️ **ACCESS POLICY & RULES:**\n"
+            "• **Members:** You are permitted to use `/start` (to browse and checkout) and `/help` (for instructions).\n"
+            "• **Admins & Owners:** Advanced store & hub controls (`/admin`, `/setup`, `/sethub`, `/setadmin`, `/setproof`, etc.) are strictly locked to verified Administrators and Owners.\n\n"
             "─── 🛒 **STEP-BY-STEP PURCHASING GUIDE FOR MEMBERS** ───\n"
             "1️⃣ **Start Checkout:** Type `/start` in private DM (or click *Browse Store & Buy Access*).\n"
-            "2️⃣ **Select Payment Method:** Choose your preferred payment option (GCash, Maya, MariBank, or Bank Transfer).\n"
+            "2️⃣ **Select Payment Method:** Choose your preferred payment option (GCash, Maya, MariBank, Bank Transfer, or Crypto).\n"
             "3️⃣ **Make Transfer:** Send the exact amount using the provided account details and reference number.\n"
             "4️⃣ **Submit Receipt:** Take a photo or screenshot of your successful transaction receipt and send it directly to this chat.\n"
             "5️⃣ **Receive Single-Use Link:** Our admin team will verify your receipt. Once approved, the bot will automatically send you a private single-use invite link to the Main Directory Hub!\n\n"
-            "─── 📚 **NAVIGATING COURSES & VAULTS** ───\n"
+            "─── 📚 **NAVIGATING COURSES, EBOOKS & FILES** ───\n"
             "• Join the **Main Directory Hub** using your unique invite link.\n"
-            "• Inside the hub, click any **[Lesson Link]** or **[Ebook Link]** to jump directly to your course material inside our vault channels!\n\n"
-            "─── ⚙️ **FOR STORE OWNERS & ADMINISTRATORS ONLY** ───\n"
+            "• Inside the hub, click any **[Lesson Link]**, **[Ebook Link]**, **[Software/APK Link]**, or **[Code Link]** to jump directly to your material inside our vault channels!\n\n"
+            "─── ⚙️ **FOR STORE OWNERS & MANAGERS ONLY** ───\n"
             "• Type `/setup` in private DM to open the Setup Wizard.\n"
             "• Type `/admin` to open your **Admin Control Desk**.\n"
-            "• Run `/sethub`, `/setadmin`, or `/setproof` inside target chats to bind or unbind system rooms."
+            "• Type `/customindex` to customize indexing labels and course arrangements."
         ),
         "receipt": "⌛ **Receipt Submitted!**\n\nThank you {name}. Our admin team is verifying your payment. Once approved, you will automatically receive your invite link here!"
     },
@@ -829,7 +833,7 @@ async def view_vault_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         keyboard.append([InlineKeyboardButton(f"📁 Browse: {cat_name}", callback_data=f"browsechat_{chat_id}")])
 
     await msg.reply_text(
-        "🔍 **VAULT CONTENT & FILE INSPECTOR**\n\nSelect a channel/group below to view all indexed videos, ebooks, and modules:",
+        "🔍 **VAULT CONTENT & FILE INSPECTOR**\n\nSelect a channel/group below to view all indexed videos, ebooks, apps, and modules:",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
@@ -883,7 +887,7 @@ async def handle_vault_browser_callback(update: Update, context: ContextTypes.DE
 
         text = f"📖 **MODULE:** {title}\n📊 **Total Indexed Files:** {len(items)}\n────────────────────────────────────────\n"
         for item in items[:15]:
-            icon = "🎬" if item.get("type") == "video" else "📚"
+            icon = item.get("icon", "📚")
             text += f"{icon} **#{item.get('num')}:** [{item.get('title')}]({item.get('link')})\n"
 
         keyboard = [[InlineKeyboardButton("🔙 Back to Category", callback_data=f"browsechat_{chat_id}")]]
@@ -1029,9 +1033,14 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/sethub` (or `/sethub remove`) - Bind/Unbind Main Hub Directory\n"
         "• `/setadmin` (or `/setadmin remove`) - Bind/Unbind Admin Review Group\n"
         "• `/setproof` (or `/setproof remove`) - Bind/Unbind Proof Archive\n\n"
-        "🔍 **File & Video Inspection:**\n"
-        "• `/viewvault` - Inspect and browse all uploaded videos & ebooks\n"
-        "• `/openlink <link>` - Inspect any Telegram jump link directly\n\n"
+        "🔍 **File, Video & Index Customization:**\n"
+        "• `/viewvault` - Inspect and browse all uploaded content\n"
+        "• `/openlink <link>` - Inspect any Telegram jump link directly\n"
+        "• `/customindex` - Configure custom indexing & arrangements\n"
+        "• `/setindexlabel <Label>` - Change file prefix label (Lesson, Part, File)\n"
+        "• `/groupmodule <Master Title> | <Item 1, Item 2>` - Bundle lessons\n"
+        "• `/renameitem <Old> | <New>` - Rename index entries\n"
+        "• `/delindex` - Delete indexed modules\n\n"
         "💳 **Payment Management:**\n"
         "• `/setpayment gcash <Number> | <Name>`\n"
         "• `/addpayment <key> <Label> | <Instructions>`\n"
@@ -1247,7 +1256,7 @@ async def security_threat_detector(update: Update, context: ContextTypes.DEFAULT
         return
 
     user = msg.from_user
-    if is_super_admin(user.id):
+    if is_super_admin(user.id) or await is_admin_or_owner(update, context):
         return
 
     text_content = (msg.text or msg.caption or "").lower()
@@ -1377,7 +1386,7 @@ async def add_bad_word_command(update: Update, context: ContextTypes.DEFAULT_TYP
     else:
         await msg.reply_text(f"ℹ️ Word `{word}` is already in the blocklist.")
 
-# ================= AUTOMATED CONTENT INDEXING =================
+# ================= AUTOMATED CONTENT INDEXING (ALL FILE TYPES) =================
 
 async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     post = update.channel_post or update.message
@@ -1404,7 +1413,10 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     extracted_text = post.text or post.caption
 
-    if (post.text and not post.video and not post.document) or (post.forward_origin and post.text and not post.video and not post.document):
+    has_media = bool(post.video or post.document or post.audio or post.photo or post.animation)
+
+    # CASE 1: Pure Text Post - Declared Module Header
+    if (post.text and not has_media) or (post.forward_origin and post.text and not has_media):
         raw_title = post.text.strip()
         if raw_title.startswith("/"):
             return
@@ -1423,7 +1435,8 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=main_hub_id, text=f"{status_msg}\n────────────────────────────────────────", parse_mode="Markdown")
         return
 
-    if post.video or post.document:
+    # CASE 2: Uploaded Content (Videos, Ebooks, APKs, EXEs, Source Code, Audio, Photos, Documents)
+    if has_media:
         active_key = VAULT_STATE[chat_id].get("active_course", "General Library")
         if active_key not in VAULT_STATE[chat_id]["courses"]:
             VAULT_STATE[chat_id]["courses"][active_key] = {"display_title": active_key.title(), "file_count": 0, "items": []}
@@ -1432,13 +1445,53 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_num = VAULT_STATE[chat_id]["courses"][active_key]["file_count"]
         display_title = VAULT_STATE[chat_id]["courses"][active_key]["display_title"]
 
-        content_type_icon = "🎬" if post.video else "📚"
-        item_label = f"Lesson {file_num}" if post.video else f"Ebook Part {file_num}"
-        caption_title = extracted_text.split("\n")[0] if extracted_text else item_label
+        prefix_label = tenant_cfg.get("indexing_settings", {}).get("custom_label", "Lesson")
+
+        if post.video:
+            content_type_icon = "🎬"
+            item_type = "video"
+            default_label = f"{prefix_label} {file_num}"
+        elif post.audio:
+            content_type_icon = "🎵"
+            item_type = "audio"
+            default_label = f"Audio Track {file_num}"
+        elif post.photo:
+            content_type_icon = "🖼️"
+            item_type = "photo"
+            default_label = f"Image {file_num}"
+        elif post.animation:
+            content_type_icon = "🎞️"
+            item_type = "animation"
+            default_label = f"Animation {file_num}"
+        elif post.document:
+            doc_name = (post.document.file_name or "").lower()
+            if doc_name.endswith((".pdf", ".epub", ".mobi", ".doc", ".docx", ".txt")):
+                content_type_icon = "📚"
+                item_type = "ebook"
+                default_label = f"Ebook/Doc Part {file_num}"
+            elif doc_name.endswith((".apk", ".exe", ".msi", ".dmg", ".iso", ".app")):
+                content_type_icon = "📦"
+                item_type = "app_software"
+                default_label = f"Software/App Part {file_num}"
+            elif doc_name.endswith((".py", ".js", ".html", ".css", ".cpp", ".c", ".java", ".php", ".sh", ".json", ".zip", ".rar", ".7z")):
+                content_type_icon = "💻"
+                item_type = "code_archive"
+                default_label = f"Code/Archive {file_num}"
+            else:
+                content_type_icon = "📁"
+                item_type = "document"
+                default_label = f"File {file_num}"
+        else:
+            content_type_icon = "📁"
+            item_type = "generic"
+            default_label = f"Item {file_num}"
+
+        caption_title = extracted_text.split("\n")[0] if extracted_text else default_label
         direct_link = f"https://t.me/c/{clean_chat_id}/{thread_id}/{post.message_id}" if thread_id else f"https://t.me/c/{clean_chat_id}/{post.message_id}"
 
         item_info = {
-            "type": "video" if post.video else "document",
+            "type": item_type,
+            "icon": content_type_icon,
             "num": file_num,
             "title": caption_title,
             "link": direct_link,
@@ -1572,6 +1625,51 @@ async def handle_del_index_callback(update: Update, context: ContextTypes.DEFAUL
 
     await query.edit_message_text("❌ Module not found.")
 
+async def set_index_label_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    user = update.effective_user
+    if not msg or not user:
+        return
+
+    if not await is_admin_or_owner(update, context):
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
+        return
+
+    if not context.args:
+        await msg.reply_text("⚠️ **Usage:** `/setindexlabel <Lesson|Chapter|Module|Part>`", parse_mode="Markdown")
+        return
+
+    new_label = context.args[0].strip()
+    tenant_cfg = get_tenant_config(user.id)
+    tenant_cfg.setdefault("indexing_settings", {})["custom_label"] = new_label
+    save_config(GLOBAL_CONFIG)
+    await msg.reply_text(f"✅ **Success!** Default indexing label set to **{new_label}**!", parse_mode="Markdown")
+
+async def custom_index_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    user = update.effective_user
+    if not msg or not user:
+        return
+
+    if not await is_admin_or_owner(update, context):
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
+        return
+
+    tenant_cfg = get_tenant_config(user.id)
+    current_label = tenant_cfg.get("indexing_settings", {}).get("custom_label", "Lesson")
+
+    panel_text = (
+        "⚙️ **CUSTOM INDEXING & ARRANGEMENT DESK**\n\n"
+        f"🏷️ **Current Item Prefix Label:** `{current_label}`\n\n"
+        "📝 **AVAILABLE INDEXING COMMANDS:**\n"
+        "• `/setindexlabel <Label>` - Set item prefix (Lesson, Chapter, Part, File)\n"
+        "• `/groupmodule <Master Title> | <Items>` - Bundle multiple lessons into a master post\n"
+        "• `/renameitem <Old Title> | <New Title>` - Rename indexed course or module titles\n"
+        "• `/delindex` - Remove unwanted modules or files from database index\n"
+        "• `/viewvault` - Inspect all indexed vault channels, videos & files"
+    )
+    await msg.reply_text(panel_text, parse_mode="Markdown")
+
 # ================= CONFIG AUDIT & ADVANCED UTILITIES =================
 
 async def set_msg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1703,9 +1801,11 @@ bot_app.add_handler(CommandHandler("delcoowner", del_coowner_command))
 bot_app.add_handler(CommandHandler("renameowner", rename_owner_command))
 bot_app.add_handler(CommandHandler(["shopname", "setshopname"], set_shop_name_command))
 
-# File & Jump Link Inspection Commands
+# File, Jump Link & Index Customization Commands
 bot_app.add_handler(CommandHandler("viewvault", view_vault_command))
 bot_app.add_handler(CommandHandler("openlink", open_link_command))
+bot_app.add_handler(CommandHandler("customindex", custom_index_panel))
+bot_app.add_handler(CommandHandler("setindexlabel", set_index_label_command))
 
 # Bot Profile Setup Commands
 bot_app.add_handler(CommandHandler("setbotname", set_bot_name_command))
