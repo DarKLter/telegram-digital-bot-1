@@ -1,3 +1,19 @@
+import os
+import json
+import logging
+import asyncio
+from flask import Flask, request, jsonify
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters,
+)
+
 async def member_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.effective_user.full_name
     template = BOT_CONFIG["messages"].get("help", DEFAULT_CONFIG["messages"]["help"])
@@ -30,21 +46,6 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔍 **System Audit:** `/config`"
     )
     await update.message.reply_text(admin_help_text, parse_mode="Markdown")
-
-import json
-import logging
-import asyncio
-from flask import Flask, request, jsonify
-
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    filters,
-)
 
 # ================= CONFIGURATION =================
 
