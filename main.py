@@ -176,6 +176,7 @@ async def is_admin_or_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     user = update.effective_user
     chat = update.effective_chat
 
+    # In Telegram channels, channel posts do not have an effective_user (user is None).
     if not user:
         if chat and chat.type in ["channel", "group", "supergroup"]:
             return True
@@ -290,6 +291,7 @@ async def handle_mode_switch(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if data.startswith("mode_customer"):
         parts = data.split("_")
         owner_id = int(parts[2]) if len(parts) > 2 else user.id
+        context.user_data["active_owner_id"] = owner_id
         tenant_cfg = get_tenant_config(owner_id)
         shop_name = tenant_cfg.get("shop_name", "Digital Vault Store")
 
@@ -907,14 +909,15 @@ async def set_hub_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     user = update.effective_user
     chat = update.effective_chat
-    if not msg or not chat or not user:
+    if not msg or not chat:
         return
 
     if not await is_admin_or_owner(update, context):
         await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nOnly administrators or room owners can set room roles.", parse_mode="Markdown")
         return
 
-    tenant_cfg = get_tenant_config(user.id)
+    owner_id = user.id if user else (GLOBAL_CONFIG.get("chat_tenant_map", {}).get(str(chat.id)) or SUPER_ADMIN_IDS[0])
+    tenant_cfg = get_tenant_config(owner_id)
     chat_str = str(chat.id)
     args = [a.lower() for a in context.args] if context.args else []
 
@@ -926,13 +929,83 @@ async def set_hub_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     tenant_cfg["main_hub_id"] = chat.id
-    GLOBAL_CONFIG.setdefault("chat_tenant_map", {})[chat_str] = user.id
+    GLOBAL_CONFIG.setdefault("chat_tenant_map", {})[chat_str] = owner_id
     save_config(GLOBAL_CONFIG)
 
+    owner_name = user.full_name if user else "Admin"
     await msg.reply_text(
         f"✅ **SUCCESS!** Current chat (`{chat.id}`) registered as **YOUR MAIN HUB DIRECTORY**!\n"
-        f"👤 **Vault Owner:** {user.full_name} (`{user.id}`)\n\n"
+        f"👤 **Vault Owner ID:** `{owner_id}` ({owner_name})\n\n"
         "💡 _To unbind later, type `/sethub remove` or `/sethub` again in this chat._",
+        parse_mode="Markdown"
+    )
+
+async def set_admin_group_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    if not msg or not chat:
+        return
+
+    if not await is_admin_or_owner(update, context):
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
+        return
+
+    owner_id = user.id if user else (GLOBAL_CONFIG.get("chat_tenant_map", {}).get(str(chat.id)) or SUPER_ADMIN_IDS[0])
+    tenant_cfg = get_tenant_config(owner_id)
+    chat_str = str(chat.id)
+    args = [a.lower() for a in context.args] if context.args else []
+
+    if any(kw in args for kw in ["remove", "clear", "unset", "off", "del"]) or (tenant_cfg.get("admin_proof_group_id") == chat.id and not args):
+        tenant_cfg["admin_proof_group_id"] = 0
+        GLOBAL_CONFIG.get("chat_tenant_map", {}).pop(chat_str, None)
+        save_config(GLOBAL_CONFIG)
+        await msg.reply_text("🗑️ Group **unbound / removed** as your Admin Verification Group!", parse_mode="Markdown")
+        return
+
+    tenant_cfg["admin_proof_group_id"] = chat.id
+    GLOBAL_CONFIG.setdefault("chat_tenant_map", {})[chat_str] = owner_id
+    save_config(GLOBAL_CONFIG)
+
+    owner_name = user.full_name if user else "Admin"
+    await msg.reply_text(
+        f"✅ **SUCCESS!** Current group (`{chat.id}`) registered as **YOUR ADMIN VERIFICATION GROUP**!\n"
+        f"👤 **Vault Owner ID:** `{owner_id}` ({owner_name})\n\n"
+        "💡 _Receipt screenshot submissions from your customers will be forwarded here for approval!_",
+        parse_mode="Markdown"
+    )
+
+async def set_proof_archive_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    if not msg or not chat:
+        return
+
+    if not await is_admin_or_owner(update, context):
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
+        return
+
+    owner_id = user.id if user else (GLOBAL_CONFIG.get("chat_tenant_map", {}).get(str(chat.id)) or SUPER_ADMIN_IDS[0])
+    tenant_cfg = get_tenant_config(owner_id)
+    chat_str = str(chat.id)
+    args = [a.lower() for a in context.args] if context.args else []
+
+    if any(kw in args for kw in ["remove", "clear", "unset", "off", "del"]) or (tenant_cfg.get("proof_archive_id") == chat.id and not args):
+        tenant_cfg["proof_archive_id"] = 0
+        GLOBAL_CONFIG.get("chat_tenant_map", {}).pop(chat_str, None)
+        save_config(GLOBAL_CONFIG)
+        await msg.reply_text("🗑️ Chat **unbound / removed** as your Proof Archive!", parse_mode="Markdown")
+        return
+
+    tenant_cfg["proof_archive_id"] = chat.id
+    GLOBAL_CONFIG.setdefault("chat_tenant_map", {})[chat_str] = owner_id
+    save_config(GLOBAL_CONFIG)
+
+    owner_name = user.full_name if user else "Admin"
+    await msg.reply_text(
+        f"✅ **SUCCESS!** Current chat (`{chat.id}`) registered as **YOUR PROOF ARCHIVE**!\n"
+        f"👤 **Vault Owner ID:** `{owner_id}` ({owner_name})",
         parse_mode="Markdown"
     )
 
@@ -1179,10 +1252,12 @@ async def payment_option_selected(update: Update, context: ContextTypes.DEFAULT_
         parts = data.split("_", 2)
         owner_id = int(parts[1])
         method = parts[2]
+        context.user_data["active_owner_id"] = owner_id
         tenant_cfg = get_tenant_config(owner_id)
     else:
         method = data
-        tenant_cfg = get_tenant_config(query.from_user.id)
+        owner_id = context.user_data.get("active_owner_id", query.from_user.id)
+        tenant_cfg = get_tenant_config(owner_id)
 
     instructions = tenant_cfg.get("payments", {}).get(method, "Payment details not configured.")
     instructions_text = f"{instructions}\n\n📸 **INSTRUCTIONS:** Send your receipt screenshot directly here."
@@ -1192,111 +1267,49 @@ async def handle_photo_receipt(update: Update, context: ContextTypes.DEFAULT_TYP
     user = update.message.from_user
     photo_file_id = update.message.photo[-1].file_id
 
-    owner_id, tenant_cfg = get_tenant_by_chat(update.effective_chat.id)
-    if not tenant_cfg:
-        owner_id = user.id
-        tenant_cfg = get_tenant_config(user.id)
+    # Retrieve active store owner ID from user session or tenant mapping
+    owner_id = context.user_data.get("active_owner_id")
+    if not owner_id:
+        chat_owner_id, tenant_cfg = get_tenant_by_chat(update.effective_chat.id)
+        owner_id = chat_owner_id if chat_owner_id else user.id
 
+    tenant_cfg = get_tenant_config(owner_id)
     admin_group_id = tenant_cfg.get("admin_proof_group_id")
+
     if not admin_group_id:
-        await update.message.reply_text("⚠️ Payment group is not configured for this vault. Run `/setadmin` in your admin verification group.")
+        # Fallback to check if any super admin has an admin verification group set
+        for t_id, t_data in GLOBAL_CONFIG.get("tenants", {}).items():
+            if t_data.get("admin_proof_group_id"):
+                admin_group_id = t_data.get("admin_proof_group_id")
+                tenant_cfg = t_data
+                owner_id = int(t_id)
+                break
+
+    if not admin_group_id:
+        await update.message.reply_text(
+            "⚠️ Payment verification group is not configured for this store yet.\n"
+            "An administrator must run `/setadmin` in the review group."
+        )
         return
 
     keyboard = [
         [InlineKeyboardButton("✅ Approve", callback_data=f"approve_{user.id}_{owner_id}"), InlineKeyboardButton("❌ Reject", callback_data=f"reject_{user.id}_{owner_id}")]
     ]
-    await context.bot.send_photo(
-        chat_id=admin_group_id,
-        photo=photo_file_id,
-        caption=f"📥 **NEW RECEIPT SUBMISSION**\n👤 **Buyer:** {user.full_name} (`{user.id}`)\n💬 **Username:** @{user.username if user.username else 'N/A'}",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown",
-    )
-
-    template = tenant_cfg["messages"].get("receipt", DEFAULT_TENANT_CONFIG["messages"]["receipt"])
-    await update.message.reply_text(template.replace("{name}", user.full_name), parse_mode="Markdown")
-
-async def handle_admin_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    data = query.data.split("_")
-    action = data[0]
-    buyer_id = int(data[1])
-    owner_id = int(data[2]) if len(data) > 2 else query.from_user.id
-
-    tenant_cfg = get_tenant_config(owner_id)
-    main_hub_id = tenant_cfg.get("main_hub_id")
-    proof_archive_id = tenant_cfg.get("proof_archive_id")
-
-    if action == "approve":
-        try:
-            invite_link = await context.bot.create_chat_invite_link(chat_id=main_hub_id, member_limit=1)
-            await context.bot.send_message(chat_id=buyer_id, text=f"🎉 **Payment Approved! Join Hub:** {invite_link.invite_link}")
-            await query.edit_message_caption(caption=f"{query.message.caption}\n\nSTATUS: ✅ **APPROVED BY ADMIN**")
-
-            if proof_archive_id:
-                await context.bot.forward_message(chat_id=proof_archive_id, from_chat_id=query.message.chat_id, message_id=query.message.message_id)
-        except Exception as e:
-            logger.error(f"Approval error: {e}")
-            await query.message.reply_text(f"❌ Approval error: {e}")
-    elif action == "reject":
-        await context.bot.send_message(chat_id=buyer_id, text="❌ **Verification failed.** Please check your reference number and submit a clear screenshot.")
-        await query.edit_message_caption(caption=f"{query.message.caption}\n\nSTATUS: ❌ **REJECTED BY ADMIN**")
-
-# ================= SECURITY THREAT DETECTOR & GROUP MODERATION =================
-
-async def security_threat_detector(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    if not msg or not msg.from_user:
-        return
-
-    chat = msg.chat
-    if chat.type not in ["group", "supergroup"]:
-        return
-
-    user = msg.from_user
-    if is_super_admin(user.id) or await is_admin_or_owner(update, context):
-        return
-
-    text_content = (msg.text or msg.caption or "").lower()
-    sec_cfg = DEFAULT_TENANT_CONFIG["security"]
-
-    threat_detected = False
-    violation_reason = ""
-
-    for keyword in sec_cfg["phishing_keywords"]:
-        if keyword in text_content:
-            threat_detected = True
-            violation_reason = f"Phishing keyword detected: `{keyword}`"
-            break
-
-    if msg.document:
-        doc_name = msg.document.file_name.lower()
-        for ext in sec_cfg["suspicious_extensions"]:
-            if doc_name.endswith(ext):
-                threat_detected = True
-                violation_reason = f"Suspicious file attachment: `{ext}`"
-                break
-
-    if threat_detected:
-        try:
-            await msg.delete()
-        except Exception as e:
-            logger.error(f"Failed to delete malicious message: {e}")
-
-        keyboard = [
-            [
-                InlineKeyboardButton("🥾 Kick & Ban User", callback_data=f"seckick_ban_{user.id}_{chat.id}"),
-                InlineKeyboardButton("🛡️ Keep & Dismiss", callback_data=f"seckick_keep_{user.id}")
-            ]
-        ]
-        alert_text = (
-            f"🚨 **SECURITY ALERT: POTENTIAL THREAT DETECTED!** 🚨\n\n"
-            f"👤 **User:** {user.full_name} (`{user.id}`)\n"
-            f"💬 **Group:** {chat.title} (`{chat.id}`)\n"
-            f"⚠️ **Reason:** {violation_reason}\n\n"
-            f"👉 Message was automatically deleted. Select action below:"
+    
+    try:
+        await context.bot.send_photo(
+            chat_id=admin_group_id,
+            photo=photo_file_id,
+            caption=f"📥 **NEW RECEIPT SUBMISSION**\n👤 **Buyer:** {user.full_name} (`{user.id}`)\n💬 **Username:** @{user.username if user.username else 'N/A'}",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown",
+        )
+        template = tenant_cfg["messages"].get("receipt", DEFAULT_TENANT_CONFIG["messages"]["receipt"])
+        await update.message.reply_text(template.replace("{name}", user.full_name), parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Error forwarding photo receipt to admin group {admin_group_id}: {e}")
+        await update.message.reply_text(
+            "⚠️ Unable to forward receipt screenshot to verification group. Please inform the store admin."
         )
 
         for s_admin_id in GLOBAL_CONFIG.get("super_admin_ids", SUPER_ADMIN_IDS):
@@ -1396,7 +1409,20 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = post.chat_id
     owner_id, tenant_cfg = get_tenant_by_chat(chat_id)
     if not tenant_cfg:
-        return
+        # Fallback to check if chat installer exists or assign default tenant
+        chat_map = GLOBAL_CONFIG.get("chat_tenant_map", {})
+        if str(chat_id) in chat_map:
+            owner_id = chat_map[str(chat_id)]
+            tenant_cfg = get_tenant_config(owner_id)
+        else:
+            tenants = GLOBAL_CONFIG.get("tenants", {})
+            if tenants:
+                owner_id = int(list(tenants.keys())[0])
+                tenant_cfg = tenants[str(owner_id)]
+                GLOBAL_CONFIG.setdefault("chat_tenant_map", {})[str(chat_id)] = owner_id
+                save_config(GLOBAL_CONFIG)
+            else:
+                return
 
     main_hub_id = tenant_cfg.get("main_hub_id")
     if not main_hub_id or chat_id in [main_hub_id, tenant_cfg.get("admin_proof_group_id"), tenant_cfg.get("proof_archive_id")]:
@@ -1432,7 +1458,10 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status_msg = f"🔄 **RE-OPENED MODULE IN {category_name.upper()}**\n\n📖 **Title:** `{raw_title}`\n📊 **Current Total Files:** {current_count}"
 
         save_state(VAULT_STATE)
-        await context.bot.send_message(chat_id=main_hub_id, text=f"{status_msg}\n────────────────────────────────────────", parse_mode="Markdown")
+        try:
+            await context.bot.send_message(chat_id=main_hub_id, text=f"{status_msg}\n────────────────────────────────────────", parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"Failed to post module header to hub {main_hub_id}: {e}")
         return
 
     # CASE 2: Uploaded Content (Videos, Ebooks, APKs, EXEs, Source Code, Audio, Photos, Documents)
@@ -1507,26 +1536,10 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👉 _Click the link above to jump directly to this material!_"
         )
 
-        await context.bot.send_message(chat_id=main_hub_id, text=lesson_entry, parse_mode="Markdown", disable_web_page_preview=True)
-
-# ================= ADVANCED MODULE GROUPING & RENAMING =================
-
-async def group_module_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.effective_message
-    user = update.effective_user
-    if not msg or not user:
-        return
-
-    if not await is_admin_or_owner(update, context):
-        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
-        return
-
-    if not context.args:
-        await msg.reply_text("⚠️ **Usage:** `/groupmodule Game Dev Master Bundle | Lesson 1, Lesson 2`", parse_mode="Markdown")
-        return
-
-    payload = " ".join(context.args)
-    if "|" not in payload:
+        try:
+            await context.bot.send_message(chat_id=main_hub_id, text=lesson_entry, parse_mode="Markdown", disable_web_page_preview=True)
+        except Exception as e:
+            logger.error(f"Failed to post index entry to main hub {main_hub_id}: {e}")
         await msg.reply_text("❌ Please use `|` to separate the title from included items.")
         return
 
