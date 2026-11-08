@@ -46,7 +46,22 @@ DEFAULT_TENANT_CONFIG = {
     },
     "messages": {
         "welcome": "👋 **Welcome to {shop_name}, {name}!**\n\nGet access to our complete library of courses and ebooks.\n\nPlease select your preferred payment method below:",
-        "help": "📖 **MEMBER HELP & INSTRUCTIONS**\n\nWelcome {name}! Here is how to purchase access:\n\n1️⃣ **Start Checkout:** Select a payment method below.\n2️⃣ **Make Transfer:** Pay the exact amount using the payment details shown.\n3️⃣ **Send Receipt:** Take a screenshot of your successful transaction and send the photo directly to this chat.\n4️⃣ **Instant Access:** Once approved, you will automatically receive a private single-use invite link to the hub!",
+        "help": (
+            "📖 **MEMBER GUIDE: HOW TO BUY & USE THE DIGITAL VAULT**\n\n"
+            "Welcome **{name}** to **{shop_name}**! Here is your step-by-step guide on how to purchase course access, submit receipt screenshots, and navigate our library:\n\n"
+            "─── 🛒 **STEP-BY-STEP PURCHASING GUIDE** ───\n"
+            "1️⃣ **Start Checkout:** Type `/start` in private DM (or click *Browse Store & Buy Access*).\n"
+            "2️⃣ **Select Payment Method:** Choose your preferred payment option (GCash, Maya, MariBank, or Bank Transfer).\n"
+            "3️⃣ **Make Transfer:** Send the exact amount using the provided account details and reference number.\n"
+            "4️⃣ **Submit Receipt:** Take a photo or screenshot of your successful transaction receipt and send it directly to this chat.\n"
+            "5️⃣ **Instant Single-Use Link:** Our admin team will verify your receipt. Once approved, the bot will automatically send you a private single-use invite link to the Main Directory Hub!\n\n"
+            "─── 📚 **NAVIGATING COURSES & VAULTS** ───\n"
+            "• Join the **Main Directory Hub** using your unique invite link.\n"
+            "• Inside the hub, click any **[Lesson Link]** or **[Ebook Link]** to jump directly to your course material inside our vault channels!\n\n"
+            "─── ⚙️ **STORE OWNERS & MANAGERS** ───\n"
+            "• Want to use this bot to manage your own groups and channels? Type `/setup` in private DM to open the Setup Wizard!\n"
+            "• Type `/admin` for administrator management features."
+        ),
         "receipt": "⌛ **Receipt Submitted!**\n\nThank you {name}. Our admin team is verifying your payment. Once approved, you will automatically receive your invite link here!"
     },
     "moderation": {
@@ -181,10 +196,123 @@ async def is_admin_or_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     return False
 
+# ================= ENHANCED MEMBER HELP COMMAND & USER ONBOARDING =================
+
+async def member_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Detailed member help command explaining how to buy, submit receipts, and access vaults."""
+    msg = update.effective_message
+    user = update.effective_user
+    if not msg or not user:
+        return
+
+    is_admin = await is_admin_or_owner(update, context)
+    allow_admin = GLOBAL_CONFIG.get("settings", {}).get("allow_admin_member_cmds", False)
+
+    if is_admin and not allow_admin and msg.chat.type != "private":
+        await msg.reply_text(
+            "ℹ️ **ADMIN NOTICE**\n\n"
+            "Member help instructions (`/help`) are currently hidden for Admins in group chats to keep views focused on management.\n\n"
+            "• Type `/setup` in private DM to open your **Full Setup Wizard**.\n"
+            "• Type `/admin` to open your **Admin Control Panel**.",
+            parse_mode="Markdown"
+        )
+        return
+
+    owner_id, tenant_cfg = get_tenant_by_chat(msg.chat.id) if msg.chat else (None, None)
+    if not tenant_cfg:
+        tenant_cfg = get_tenant_config(user.id)
+
+    shop_name = tenant_cfg.get("shop_name", "Digital Vault Store")
+    template = tenant_cfg["messages"].get("help", DEFAULT_TENANT_CONFIG["messages"]["help"])
+    help_text = template.replace("{name}", user.full_name).replace("{shop_name}", shop_name)
+
+    keyboard = [
+        [InlineKeyboardButton("🛒 Start Buying & Checkout Now", callback_data=f"mode_customer_{tenant_cfg.get('primary_owner_id', user.id)}")],
+        [InlineKeyboardButton("⚙️ Manager Setup Wizard", callback_data=f"setup_main_{user.id}")],
+    ]
+
+    await msg.reply_text(help_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    user = update.effective_user
+    if not msg or not user:
+        return
+
+    is_admin = await is_admin_or_owner(update, context)
+    allow_admin = GLOBAL_CONFIG.get("settings", {}).get("allow_admin_member_cmds", False)
+
+    if is_admin and not allow_admin and msg.chat.type != "private":
+        await msg.reply_text(
+            "ℹ️ **ADMIN NOTICE**\n\n"
+            "Member checkout (`/start`) is currently hidden for admins in group chats.\n"
+            "• Type `/setup` in private DM to open your **Full Setup Wizard**.\n"
+            "• Type `/admin` to open your **Admin Control Panel**.",
+            parse_mode="Markdown"
+        )
+        return
+
+    tenant_cfg = get_tenant_config(user.id)
+    shop_name = tenant_cfg.get("shop_name", "Digital Vault Store")
+
+    keyboard = [
+        [InlineKeyboardButton("🛒 Browse Store & Buy Access", callback_data=f"mode_customer_{user.id}")],
+        [InlineKeyboardButton("📖 Read How to Buy (/help)", callback_data=f"show_help_cb_{user.id}")],
+        [InlineKeyboardButton("⚙️ Setup & Manage My Own Vault / Groups", callback_data=f"setup_main_{user.id}")],
+    ]
+
+    welcome_text = (
+        f"👋 **Welcome to {shop_name}, {user.full_name}!**\n\n"
+        "How would you like to proceed?\n\n"
+        "• Click **Browse Store** to view available payment methods and buy access.\n"
+        "• Click **Read How to Buy** for step-by-step instructions.\n"
+        "• Click **Setup & Manage My Own Vault** to configure your channels, groups, payment accounts, and user IDs!"
+    )
+    await msg.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def handle_mode_switch(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user = query.from_user
+    data = query.data
+
+    if data.startswith("mode_customer"):
+        parts = data.split("_")
+        owner_id = int(parts[2]) if len(parts) > 2 else user.id
+        tenant_cfg = get_tenant_config(owner_id)
+        shop_name = tenant_cfg.get("shop_name", "Digital Vault Store")
+
+        template = tenant_cfg["messages"].get("welcome", DEFAULT_TENANT_CONFIG["messages"]["welcome"])
+        welcome_text = template.replace("{name}", user.full_name).replace("{shop_name}", shop_name)
+
+        keyboard = []
+        payments = tenant_cfg.get("payments", DEFAULT_TENANT_CONFIG["payments"])
+        for key, val in payments.items():
+            title_line = val.split("\n")[0].replace("*", "").replace("📱", "").replace("🏦", "").replace("💰", "").strip()
+            keyboard.append([InlineKeyboardButton(title_line, callback_data=f"payusr_{owner_id}_{key}")])
+
+        keyboard.append([InlineKeyboardButton("📖 How to Buy Instructions", callback_data=f"show_help_cb_{owner_id}")])
+        await query.edit_message_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+    elif data.startswith("show_help_cb"):
+        parts = data.split("_")
+        owner_id = int(parts[3]) if len(parts) > 3 else user.id
+        tenant_cfg = get_tenant_config(owner_id)
+        shop_name = tenant_cfg.get("shop_name", "Digital Vault Store")
+
+        template = tenant_cfg["messages"].get("help", DEFAULT_TENANT_CONFIG["messages"]["help"])
+        help_text = template.replace("{name}", user.full_name).replace("{shop_name}", shop_name)
+
+        keyboard = [
+            [InlineKeyboardButton("🛒 Start Buying Now", callback_data=f"mode_customer_{owner_id}")],
+            [InlineKeyboardButton("🔙 Back to Main Menu", callback_data=f"mode_customer_{owner_id}")],
+        ]
+        await query.edit_message_text(help_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
 # ================= DM SETUP WIZARD & USER ID MANAGEMENT =================
 
 async def setup_wizard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Full setup wizard accessible directly inside DM chat."""
     msg = update.effective_message
     user = update.effective_user
     if not msg or not user:
@@ -436,7 +564,6 @@ async def set_shop_name_command(update: Update, context: ContextTypes.DEFAULT_TY
 # ================= AUTO-READY ROOM JOIN HANDLER =================
 
 async def handle_bot_added_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Fired automatically when the bot is added to a new Group, Supergroup, or Channel."""
     my_chat_member = update.my_chat_member
     if not my_chat_member:
         return
@@ -517,90 +644,6 @@ async def handle_bind_room_callback(update: Update, context: ContextTypes.DEFAUL
         parse_mode="Markdown"
     )
 
-# ================= MULTI-TENANT USER & SETUP FLOWS =================
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.effective_message
-    user = update.effective_user
-    if not msg or not user:
-        return
-
-    is_admin = await is_admin_or_owner(update, context)
-    allow_admin = GLOBAL_CONFIG.get("settings", {}).get("allow_admin_member_cmds", False)
-
-    if is_admin and not allow_admin and msg.chat.type != "private":
-        await msg.reply_text(
-            "ℹ️ **ADMIN NOTICE**\n\n"
-            "Member checkout (`/start`) is currently hidden for admins in group chats.\n"
-            "• Type `/setup` in private DM to open your **Full Setup Wizard**.\n"
-            "• Type `/admin` to open your **Admin Control Panel**.",
-            parse_mode="Markdown"
-        )
-        return
-
-    tenant_cfg = get_tenant_config(user.id)
-    shop_name = tenant_cfg.get("shop_name", "Digital Vault Store")
-
-    keyboard = [
-        [InlineKeyboardButton("🛒 Browse Store & Buy Access", callback_data=f"mode_customer_{user.id}")],
-        [InlineKeyboardButton("⚙️ Setup & Manage My Own Vault / Groups", callback_data=f"setup_main_{user.id}")],
-    ]
-
-    welcome_text = (
-        f"👋 **Welcome to {shop_name}, {user.full_name}!**\n\n"
-        "How would you like to proceed?\n\n"
-        "• Click **Browse Store** to view products and purchase access.\n"
-        "• Click **Setup & Manage My Own Vault** to configure your channels, groups, payment accounts, user IDs, and automated indexing!"
-    )
-    await msg.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-async def handle_mode_switch(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    user = query.from_user
-    data = query.data
-
-    if data.startswith("mode_customer"):
-        parts = data.split("_")
-        owner_id = int(parts[2]) if len(parts) > 2 else user.id
-        tenant_cfg = get_tenant_config(owner_id)
-        shop_name = tenant_cfg.get("shop_name", "Digital Vault Store")
-
-        template = tenant_cfg["messages"].get("welcome", DEFAULT_TENANT_CONFIG["messages"]["welcome"])
-        welcome_text = template.replace("{name}", user.full_name).replace("{shop_name}", shop_name)
-
-        keyboard = []
-        payments = tenant_cfg.get("payments", DEFAULT_TENANT_CONFIG["payments"])
-        for key, val in payments.items():
-            title_line = val.split("\n")[0].replace("*", "").replace("📱", "").replace("🏦", "").replace("💰", "").strip()
-            keyboard.append([InlineKeyboardButton(title_line, callback_data=f"payusr_{owner_id}_{key}")])
-
-        await query.edit_message_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-async def member_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.effective_message
-    user = update.effective_user
-    if not msg or not user:
-        return
-
-    is_admin = await is_admin_or_owner(update, context)
-    allow_admin = GLOBAL_CONFIG.get("settings", {}).get("allow_admin_member_cmds", False)
-
-    if is_admin and not allow_admin and msg.chat.type != "private":
-        await msg.reply_text(
-            "ℹ️ **ADMIN NOTICE**\n\n"
-            "Member help instructions (`/help`) are currently hidden for Admins in groups.\n"
-            "• Type `/setup` in DM to open the **Setup Wizard**.",
-            parse_mode="Markdown"
-        )
-        return
-
-    tenant_cfg = get_tenant_config(user.id)
-    template = tenant_cfg["messages"].get("help", DEFAULT_TENANT_CONFIG["messages"]["help"])
-    text = template.replace("{name}", user.full_name)
-    await msg.reply_text(text, parse_mode="Markdown")
-
 async def handle_new_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     if not msg or not update.message or not update.message.new_chat_members:
@@ -628,7 +671,7 @@ async def handle_new_chat_members(update: Update, context: ContextTypes.DEFAULT_
         shop_name = tenant_cfg.get("shop_name", "Digital Vault Store")
         template = tenant_cfg["messages"].get("welcome", DEFAULT_TENANT_CONFIG["messages"]["welcome"])
         welcome_text = template.replace("{name}", new_member.full_name).replace("{shop_name}", shop_name)
-        help_template = tenant_cfg["messages"].get("help", DEFAULT_TENANT_CONFIG["messages"]["help"]).replace("{name}", new_member.full_name)
+        help_template = tenant_cfg["messages"].get("help", DEFAULT_TENANT_CONFIG["messages"]["help"]).replace("{name}", new_member.full_name).replace("{shop_name}", shop_name)
 
         full_welcome_text = (
             f"👋 **Welcome to the group, {new_member.full_name}!**\n\n"
@@ -1594,7 +1637,7 @@ bot_app.add_handler(CommandHandler("config", view_config_command))
 bot_app.add_handler(ChatMemberHandler(handle_bot_added_to_chat, ChatMemberHandler.MY_CHAT_MEMBER))
 bot_app.add_handler(CallbackQueryHandler(handle_setup_callbacks, pattern="^setup_"))
 bot_app.add_handler(CallbackQueryHandler(handle_bind_room_callback, pattern="^bindroom_"))
-bot_app.add_handler(CallbackQueryHandler(handle_mode_switch, pattern="^mode_"))
+bot_app.add_handler(CallbackQueryHandler(handle_mode_switch, pattern="^(mode_|show_help_cb_)"))
 bot_app.add_handler(CallbackQueryHandler(handle_vault_browser_callback, pattern="^(browsechat_|browsetit_|browse_)"))
 bot_app.add_handler(CallbackQueryHandler(handle_del_index_callback, pattern="^delmod_"))
 bot_app.add_handler(CallbackQueryHandler(handle_promotion_callback, pattern="^sendpromo_"))
