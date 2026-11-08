@@ -32,6 +32,9 @@ DEFAULT_CONFIG = {
     "main_hub_id": 0,
     "admin_proof_group_id": 0,
     "proof_archive_id": 0,
+    "settings": {
+        "allow_admin_member_cmds": False,  # If False, /start and /help display Admin Notices to Admins
+    },
     "payments": {
         "pay_gcash": "📱 **GCash Payment**\nNumber: `09171234567`\nAccount Name: Admin",
         "pay_maya": "📱 **Maya Payment**\nNumber: `09171234567`\nAccount Name: Admin",
@@ -71,9 +74,14 @@ def load_config():
                     config["owner_ids"] = DEFAULT_CONFIG["owner_ids"]
                 if "bot_token" not in config:
                     config["bot_token"] = DEFAULT_CONFIG["bot_token"]
+                if "settings" not in config:
+                    config["settings"] = DEFAULT_CONFIG["settings"]
+                if "allow_admin_member_cmds" not in config["settings"]:
+                    config["settings"]["allow_admin_member_cmds"] = DEFAULT_CONFIG["settings"]["allow_admin_member_cmds"]
                 return config
         except Exception as e:
             logger.error(f"Error loading config file: {e}")
+            return DEFAULT_CONFIG
     return DEFAULT_CONFIG
 
 def save_config(config):
@@ -91,6 +99,7 @@ def load_state():
                 return {int(k): v for k, v in data.items()}
         except Exception as e:
             logger.error(f"Error loading state file: {e}")
+            return {}
     return {}
 
 def save_state(state):
@@ -131,7 +140,7 @@ async def is_admin_or_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 return True
         except Exception as e:
             logger.error(f"Error checking chat permissions: {e}")
-            
+
     return False
 
 # ================= MEMBER COMMANDS & AUTO-WELCOME LISTENER =================
@@ -141,10 +150,55 @@ async def member_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     msg = update.effective_message
     if not msg:
         return
+
+    is_admin = await is_admin_or_owner(update, context)
+    allow_admin = BOT_CONFIG.get("settings", {}).get("allow_admin_member_cmds", False)
+
+    if is_admin and not allow_admin:
+        await msg.reply_text(
+            "ℹ️ **ADMIN NOTICE**\n\n"
+            "Member help instructions (`/help`) are currently hidden for Admins to keep your view focused on management.\n\n"
+            "• Type `/admin` to open the **Admin Control Desk**.\n"
+            "• To allow Admins to view `/help`, run: `/setconfig allow_admin_member_cmds true`",
+            parse_mode="Markdown"
+        )
+        return
+
     user_name = update.effective_user.full_name if update.effective_user else "Member"
     template = BOT_CONFIG["messages"].get("help", DEFAULT_CONFIG["messages"]["help"])
     text = template.replace("{name}", user_name)
     await msg.reply_text(text, parse_mode="Markdown")
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Starts the member purchase flow."""
+    msg = update.effective_message
+    if not msg:
+        return
+
+    is_admin = await is_admin_or_owner(update, context)
+    allow_admin = BOT_CONFIG.get("settings", {}).get("allow_admin_member_cmds", False)
+
+    if is_admin and not allow_admin:
+        await msg.reply_text(
+            "ℹ️ **ADMIN NOTICE**\n\n"
+            "You are recognized as an **Admin / Owner**. Member checkout (`/start`) is currently hidden for admins to keep your view focused on management.\n\n"
+            "• Type `/admin` to open the **Admin Control Desk**.\n"
+            "• To allow Admins to test `/start`, run: `/setconfig allow_admin_member_cmds true`",
+            parse_mode="Markdown"
+        )
+        return
+
+    user_name = update.effective_user.full_name if update.effective_user else "Member"
+    template = BOT_CONFIG["messages"].get("welcome", DEFAULT_CONFIG["messages"]["welcome"])
+    welcome_text = template.replace("{name}", user_name)
+
+    keyboard = []
+    payments = BOT_CONFIG.get("payments", DEFAULT_CONFIG["payments"])
+    for key, val in payments.items():
+        title_line = val.split("\n")[0].replace("*", "").replace("📱", "").replace("🏦", "").replace("💰", "").strip()
+        keyboard.append([InlineKeyboardButton(title_line, callback_data=key)])
+
+    await msg.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def handle_new_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Automatic greeting and help onboarding when a user joins or is added to a group/hub."""
@@ -208,11 +262,12 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/settoken <TOKEN>` - Update Bot HTTP API Token\n"
         "• `/addowner <USER_ID>` - Add a new Bot Owner\n"
         "• `/removeowner <USER_ID>` - Remove a Bot Owner\n"
-        "• `/setconfig <KEY> <VAL>` - Edit dynamic config value\n\n"
+        "• `/setconfig <KEY> <VAL>` - Edit dynamic config value\n"
+        "  _Toggle Member Cmds for Admin:_ `/setconfig allow_admin_member_cmds true` or `false`\n\n"
         "📍 **Room Binding & Removal (Toggle):**\n"
-        "• `/sethub` (or `/sethub remove` / `/unsethub`) - Bind / Unbind Main Directory Hub\n"
-        "• `/setadmin` (or `/setadmin remove` / `/unsetadmin`) - Bind / Unbind Admin Group\n"
-        "• `/setproof` (or `/setproof remove` / `/unsetproof`) - Bind / Unbind Proof Archive\n\n"
+        "• `/sethub` (or `/sethub remove`) - Bind / Unbind Main Directory Hub\n"
+        "• `/setadmin` (or `/setadmin remove`) - Bind / Unbind Admin Group\n"
+        "• `/setproof` (or `/setproof remove`) - Bind / Unbind Proof Archive\n\n"
         "📢 **Broadcast Promotion:** `/promote <Message>`\n"
         "🗑️ **Remove Indexed Course:** `/delindex`\n"
         "📦 **Group Modules:** `/groupmodule <Category> <Title> | <Items>`\n"
@@ -404,7 +459,7 @@ async def set_token_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_token = context.args[0].strip()
     BOT_CONFIG["bot_token"] = new_token
     save_config(BOT_CONFIG)
-    
+
     await update.message.reply_text(
         f"✅ **SUCCESS!** Bot API Token updated successfully!\n\n"
         f"🔑 **New Token:** `{new_token[:10]}...`\n"
@@ -460,16 +515,33 @@ async def set_config_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     if not context.args or len(context.args) < 2:
-        await update.message.reply_text("⚠️ **Usage:** `/setconfig <KEY> <VALUE>`\n_Example:_ `/setconfig main_hub_id -1001234567`", parse_mode="Markdown")
+        await update.message.reply_text(
+            "⚠️ **Usage:** `/setconfig <KEY> <VALUE>`\n"
+            "_Examples:_\n"
+            "• `/setconfig allow_admin_member_cmds true` (Allows admins to view /start & /help)\n"
+            "• `/setconfig allow_admin_member_cmds false` (Restricts /start & /help to regular members)\n"
+            "• `/setconfig main_hub_id -1001234567`",
+            parse_mode="Markdown"
+        )
         return
 
     key = context.args[0]
-    val = " ".join(context.args[1:])
+    raw_val = " ".join(context.args[1:]).strip()
 
-    if val.isdigit() or (val.startswith("-") and val[1:].isdigit()):
-        val = int(val)
+    if raw_val.lower() == "true":
+        val = True
+    elif raw_val.lower() == "false":
+        val = False
+    elif raw_val.isdigit() or (raw_val.startswith("-") and raw_val[1:].isdigit()):
+        val = int(raw_val)
+    else:
+        val = raw_val
 
-    BOT_CONFIG[key] = val
+    if key in ["allow_admin_member_cmds"]:
+        BOT_CONFIG.setdefault("settings", {})[key] = val
+    else:
+        BOT_CONFIG[key] = val
+
     save_config(BOT_CONFIG)
     await update.message.reply_text(f"✅ **SUCCESS!** Updated config `{key}` = `{val}`!", parse_mode="Markdown")
 
@@ -490,7 +562,7 @@ async def security_threat_detector(update: Update, context: ContextTypes.DEFAULT
 
     text_content = (msg.text or msg.caption or "").lower()
     sec_cfg = BOT_CONFIG.get("security", DEFAULT_CONFIG["security"])
-    
+
     threat_detected = False
     violation_reason = ""
 
@@ -864,12 +936,16 @@ async def view_config_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not await is_admin_or_owner(update, context):
         await update.message.reply_text("⛔ **Access Denied:** Admin only.")
         return
+
+    allow_admin = BOT_CONFIG.get("settings", {}).get("allow_admin_member_cmds", False)
+
     conf_text = (
         f"📋 **Configuration Audit:**\n\n"
         f"🔑 **Owner IDs:** `{BOT_CONFIG.get('owner_ids')}`\n"
         f"📍 **Main Hub ID:** `{BOT_CONFIG.get('main_hub_id')}`\n"
         f"📍 **Admin Proof Group ID:** `{BOT_CONFIG.get('admin_proof_group_id')}`\n"
         f"📍 **Proof Archive ID:** `{BOT_CONFIG.get('proof_archive_id')}`\n\n"
+        f"⚙️ **Admin Member Cmd Access:** `{allow_admin}`\n"
         f"💳 **Payments Active:** {list(BOT_CONFIG.get('payments', {}).keys())}"
     )
     await update.message.reply_text(conf_text, parse_mode="Markdown")
@@ -893,7 +969,7 @@ async def add_payment_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     pay_key = f"pay_{args[0].lower()}"
     payload = " ".join(args[1:])
     parts = [p.strip() for p in payload.split("|")]
-    
+
     label = parts[0]
     instructions = " | ".join(parts[1:]) if len(parts) > 1 else label
 
@@ -996,19 +1072,6 @@ async def rename_item_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     save_state(VAULT_STATE)
     await update.message.reply_text(f"✅ **Success!** Renamed {renamed_count} indexed entries to `{new_title}`.", parse_mode="Markdown")
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_name = update.effective_user.full_name
-    template = BOT_CONFIG["messages"].get("welcome", DEFAULT_CONFIG["messages"]["welcome"])
-    welcome_text = template.replace("{name}", user_name)
-
-    keyboard = []
-    payments = BOT_CONFIG.get("payments", DEFAULT_CONFIG["payments"])
-    for key, val in payments.items():
-        title_line = val.split("\n")[0].replace("*", "").replace("📱", "").replace("🏦", "").replace("💰", "").strip()
-        keyboard.append([InlineKeyboardButton(title_line, callback_data=key)])
-
-    await update.message.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def payment_option_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
