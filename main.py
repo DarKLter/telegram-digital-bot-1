@@ -1282,23 +1282,6 @@ async def handle_photo_receipt(update: Update, context: ContextTypes.DEFAULT_TYP
             "⚠️ Unable to forward receipt screenshot to verification group. Please inform the store admin."
         )
 
-        for s_admin_id in GLOBAL_CONFIG.get("super_admin_ids", SUPER_ADMIN_IDS):
-            try:
-            await context.bot.send_photo(
-                chat_id=admin_group_id,
-                photo=photo_file_id,
-                caption=f"📥 **NEW RECEIPT SUBMISSION**\n👤 **Buyer:** {user.full_name} (`{user.id}`)\n💬 **Username:** @{user.username if user.username else 'N/A'}",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="Markdown",
-            )
-            template = tenant_cfg["messages"].get("receipt", DEFAULT_TENANT_CONFIG["messages"]["receipt"])
-            await update.message.reply_text(template.replace("{name}", user.full_name), parse_mode="Markdown")
-        except Exception as e:
-            logger.error(f"Error forwarding photo receipt to admin group {admin_group_id}: {e}")
-            await update.message.reply_text(
-                "⚠️ Unable to forward receipt screenshot to verification group. Please inform the store admin."
-            )
-
 # ================= SECURITY THREAT DETECTOR & GROUP MODERATION =================
 
 async def security_threat_detector(update: Update, context: ContextTypes.DEFAULT_TYPE):
