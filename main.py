@@ -96,50 +96,22 @@ DEFAULT_GLOBAL_CONFIG = {
 
 # ================= PERSISTENT STORAGE HELPERS =================
 
-def sanitize_config(config_dict):
-    """Recursively strip out legacy channel-lock / A_TOOLSx2 join messages from config."""
-    if isinstance(config_dict, dict):
-        cleaned = {}
-        for k, v in config_dict.items():
-            if isinstance(v, str):
-                if "A_TOOLSx2" in v or "must join" in v.lower():
-                    if k in DEFAULT_TENANT_CONFIG["messages"]:
-                        cleaned[k] = DEFAULT_TENANT_CONFIG["messages"][k]
-                    else:
-                        cleaned[k] = ""
-                else:
-                    cleaned[k] = v
-            elif isinstance(v, (dict, list)):
-                cleaned[k] = sanitize_config(v)
-            else:
-                cleaned[k] = v
-        return cleaned
-    elif isinstance(config_dict, list):
-        return [sanitize_config(item) for item in config_dict]
-    return config_dict
-
 def load_config():
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r") as f:
                 config = json.load(f)
-                
-            config = sanitize_config(config)
-
-            if "tenants" not in config:
-                config["tenants"] = {}
-            if "chat_tenant_map" not in config:
-                config["chat_tenant_map"] = {}
-            if "super_admin_ids" not in config:
-                config["super_admin_ids"] = SUPER_ADMIN_IDS
-            if "bot_token" not in config:
-                config["bot_token"] = DEFAULT_GLOBAL_CONFIG["bot_token"]
-            if "settings" not in config:
-                config["settings"] = DEFAULT_GLOBAL_CONFIG["settings"]
-
-            # Save cleaned config immediately to overwrite any bad data saved to disk
-            save_config(config)
-            return config
+                if "tenants" not in config:
+                    config["tenants"] = {}
+                if "chat_tenant_map" not in config:
+                    config["chat_tenant_map"] = {}
+                if "super_admin_ids" not in config:
+                    config["super_admin_ids"] = SUPER_ADMIN_IDS
+                if "bot_token" not in config:
+                    config["bot_token"] = DEFAULT_GLOBAL_CONFIG["bot_token"]
+                if "settings" not in config:
+                    config["settings"] = DEFAULT_GLOBAL_CONFIG["settings"]
+                return config
         except Exception as e:
             logger.error(f"Error loading config file: {e}")
             return DEFAULT_GLOBAL_CONFIG
@@ -157,7 +129,13 @@ def load_state():
         try:
             with open(STATE_FILE, "r") as f:
                 data = json.load(f)
-                return {int(k) if k.lstrip('-').isdigit() else k: v for k, v in data.items()}
+                res = {}
+                for k, v in data.items():
+                    try:
+                        res[int(k)] = v
+                    except ValueError:
+                        res[k] = v
+                return res
         except Exception as e:
             logger.error(f"Error loading state file: {e}")
             return {}
@@ -176,6 +154,55 @@ PENDING_PROMOTIONS = {}
 
 app = Flask(__name__)
 
+# Helper function to prevent Markdown parsing crashes on raw filenames/titles
+async def safe_send_message(bot, chat_id, text, parse_mode="Markdown", reply_markup=None, disable_web_page_preview=True):
+    try:
+        return await bot.send_message(
+            chat_id=int(chat_id),
+            text=text,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup,
+            disable_web_page_preview=disable_web_page_preview
+        )
+    except Exception as e:
+        logger.warning(f"Failed to send Markdown message to {chat_id}: {e}. Retrying with plain text...")
+        clean_text = text.replace("**", "").replace("__", "").replace("`", "").replace("*", "").replace("_", "")
+        try:
+            return await bot.send_message(
+                chat_id=int(chat_id),
+                text=clean_text,
+                parse_mode=None,
+                reply_markup=reply_markup,
+                disable_web_page_preview=disable_web_page_preview
+            )
+        except Exception as err:
+            logger.error(f"Critical error sending message to {chat_id}: {err}")
+            return None
+
+async def safe_send_photo(bot, chat_id, photo, caption, reply_markup=None, parse_mode="Markdown"):
+    try:
+        return await bot.send_photo(
+            chat_id=int(chat_id),
+            photo=photo,
+            caption=caption,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode
+        )
+    except Exception as e:
+        logger.warning(f"Failed sending formatted photo caption to {chat_id}: {e}. Retrying plain text...")
+        clean_caption = caption.replace("**", "").replace("`", "").replace("*", "").replace("_", "")
+        try:
+            return await bot.send_photo(
+                chat_id=int(chat_id),
+                photo=photo,
+                caption=clean_caption,
+                reply_markup=reply_markup,
+                parse_mode=None
+            )
+        except Exception as err:
+            logger.error(f"Critical failure sending photo to {chat_id}: {err}")
+            return None
+
 def normalize_title(title: str) -> str:
     return title.strip().lower()
 
@@ -187,14 +214,7 @@ def get_tenant_config(owner_id: int):
         new_tenant["primary_owner_id"] = owner_id
         tenants[owner_str] = new_tenant
         save_config(GLOBAL_CONFIG)
-        
-    tenant_cfg = tenants[owner_str]
-    msgs = tenant_cfg.setdefault("messages", {})
-    for m_key, m_val in list(msgs.items()):
-        if not isinstance(m_val, str) or "A_TOOLSx2" in m_val or "must join" in m_val.lower():
-            msgs[m_key] = DEFAULT_TENANT_CONFIG["messages"].get(m_key, "")
-
-    return tenant_cfg
+    return tenants[owner_str]
 
 def get_tenant_by_chat(chat_id: int):
     chat_str = str(chat_id)
@@ -239,12 +259,12 @@ async def is_admin_or_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     return False
 
-# ================= MEMBER HELP COMMAND & USER ONBOARDING =================
+# ================= ENHANCED MEMBER HELP COMMAND & USER ONBOARDING =================
 
 async def member_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     user = update.effective_user
-    if not msg:
+    if not msg or not user:
         return
 
     is_admin = await is_admin_or_owner(update, context)
@@ -260,31 +280,26 @@ async def member_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
 
-    user_id = user.id if user else 0
     owner_id, tenant_cfg = get_tenant_by_chat(msg.chat.id) if msg.chat else (None, None)
     if not tenant_cfg:
-        tenant_cfg = get_tenant_config(user_id)
+        tenant_cfg = get_tenant_config(user.id)
 
     shop_name = tenant_cfg.get("shop_name", "Digital Vault Store")
     template = tenant_cfg["messages"].get("help", DEFAULT_TENANT_CONFIG["messages"]["help"])
-    if "A_TOOLSx2" in template or "must join" in template.lower():
-        template = DEFAULT_TENANT_CONFIG["messages"]["help"]
-
-    full_name = user.full_name if user else "Member"
-    help_text = template.replace("{name}", full_name).replace("{shop_name}", shop_name)
+    help_text = template.replace("{name}", user.full_name).replace("{shop_name}", shop_name)
 
     keyboard = [
-        [InlineKeyboardButton("🛒 Start Buying & Checkout Now", callback_data=f"mode_customer_{tenant_cfg.get('primary_owner_id', user_id)}")],
+        [InlineKeyboardButton("🛒 Start Buying & Checkout Now", callback_data=f"mode_customer_{tenant_cfg.get('primary_owner_id', user.id)}")],
     ]
-    if is_admin and user_id:
-        keyboard.append([InlineKeyboardButton("⚙️ Manager Setup Wizard", callback_data=f"setup_main_{user_id}")])
+    if is_admin:
+        keyboard.append([InlineKeyboardButton("⚙️ Manager Setup Wizard", callback_data=f"setup_main_{user.id}")])
 
     await msg.reply_text(help_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     user = update.effective_user
-    if not msg:
+    if not msg or not user:
         return
 
     is_admin = await is_admin_or_owner(update, context)
@@ -300,20 +315,18 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    user_id = user.id if user else 0
-    tenant_cfg = get_tenant_config(user_id)
+    tenant_cfg = get_tenant_config(user.id)
     shop_name = tenant_cfg.get("shop_name", "Digital Vault Store")
-    full_name = user.full_name if user else "Member"
 
     keyboard = [
-        [InlineKeyboardButton("🛒 Browse Store & Buy Access", callback_data=f"mode_customer_{user_id}")],
-        [InlineKeyboardButton("📖 Read How to Buy (/help)", callback_data=f"show_help_cb_{user_id}")],
+        [InlineKeyboardButton("🛒 Browse Store & Buy Access", callback_data=f"mode_customer_{user.id}")],
+        [InlineKeyboardButton("📖 Read How to Buy (/help)", callback_data=f"show_help_cb_{user.id}")],
     ]
     if is_admin or msg.chat.type == "private":
-        keyboard.append([InlineKeyboardButton("⚙️ Setup & Manage My Own Vault / Groups", callback_data=f"setup_main_{user_id}")])
+        keyboard.append([InlineKeyboardButton("⚙️ Setup & Manage My Own Vault / Groups", callback_data=f"setup_main_{user.id}")])
 
     welcome_text = (
-        f"👋 **Welcome to {shop_name}, {full_name}!**\n\n"
+        f"👋 **Welcome to {shop_name}, {user.full_name}!**\n\n"
         "How would you like to proceed?\n\n"
         "• Click **Browse Store** to view available payment methods and buy access.\n"
         "• Click **Read How to Buy** for step-by-step instructions.\n"
@@ -331,7 +344,6 @@ async def handle_mode_switch(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if data.startswith("mode_customer"):
         parts = data.split("_")
         owner_id = int(parts[2]) if len(parts) > 2 else user.id
-        context.user_data["active_owner_id"] = owner_id
         tenant_cfg = get_tenant_config(owner_id)
         shop_name = tenant_cfg.get("shop_name", "Digital Vault Store")
 
@@ -415,6 +427,7 @@ async def handle_setup_callbacks(update: Update, context: ContextTypes.DEFAULT_T
     await query.answer()
     user = query.from_user
     data = query.data
+
     tenant_cfg = get_tenant_config(user.id)
 
     if data.startswith("setup_rooms"):
@@ -768,12 +781,12 @@ async def handle_new_chat_members(update: Update, context: ContextTypes.DEFAULT_
         )
         await msg.reply_text(full_welcome_text, parse_mode="Markdown")
 
-# ================= TELEGRAM JUMP LINK INSPECTOR =================
+# ================= TELEGRAM JUMP LINK INSPECTOR FOR REAL OWNER =================
 
 async def open_link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     user = update.effective_user
-    if not msg:
+    if not msg or not user:
         return
 
     if not await is_admin_or_owner(update, context):
@@ -781,17 +794,16 @@ async def open_link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = msg.text or ""
-    pattern = r"https://t\.me/(?:c/(\d+)|([a-zA-Z0-9_]+))/(?:(\d+)/)?(\d+)"
-    links = re.findall(pattern, text)
+    links = re.findall(r"https://t\.me/c/(\d+)/(?:(\d+)/)?(\d+)", text)
 
     if not links and context.args:
         arg_text = " ".join(context.args)
-        links = re.findall(pattern, arg_text)
+        links = re.findall(r"https://t\.me/c/(\d+)/(?:(\d+)/)?(\d+)", arg_text)
 
     if not links:
         await msg.reply_text(
             "⚠️ **Usage:** Send or paste a Telegram jump link, e.g.:\n"
-            "`/openlink https://t.me/c/123456789/45` or `https://t.me/my_vault_channel/45`\n"
+            "`/openlink https://t.me/c/123456789/45`\n"
             "or paste the link directly in a private DM with the bot!",
             parse_mode="Markdown"
         )
@@ -799,56 +811,30 @@ async def open_link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for link_match in links:
         raw_chat_id = link_match[0]
-        username = link_match[1]
-        thread_id = link_match[2] if link_match[2] else None
-        msg_id = link_match[3]
+        thread_id = link_match[1] if link_match[1] else None
+        msg_id = link_match[2]
 
-        if username:
-            full_link = f"https://t.me/{username}/{thread_id}/{msg_id}" if thread_id else f"https://t.me/{username}/{msg_id}"
-            target_key = f"@{username.lower()}"
-        else:
-            full_link = f"https://t.me/c/{raw_chat_id}/{thread_id}/{msg_id}" if thread_id else f"https://t.me/c/{raw_chat_id}/{msg_id}"
-            target_key = int(f"-100{raw_chat_id}")
-
-        chat_data = VAULT_STATE.get(target_key, {})
-        if not chat_data and username:
-            for c_id, c_data in VAULT_STATE.items():
-                if str(c_id).lower() == target_key or c_data.get("category_name", "").lower() == username.lower():
-                    chat_data = c_data
-                    target_key = c_id
-                    break
-
-        cat_name = chat_data.get("category_name", f"Target {target_key}")
+        full_chat_id = int(f"-100{raw_chat_id}")
+        chat_data = VAULT_STATE.get(full_chat_id, {})
+        cat_name = chat_data.get("category_name", f"Chat {full_chat_id}")
         courses = chat_data.get("courses", {})
 
         found_item = None
         found_course = None
 
-        if not courses:
-            for c_id, c_data in VAULT_STATE.items():
-                for c_key, c_info in c_data.get("courses", {}).items():
-                    for item in c_info.get("items", []):
-                        if str(item.get("msg_id")) == str(msg_id) or item.get("link") == full_link:
-                            found_item = item
-                            found_course = c_info
-                            cat_name = c_data.get("category_name", cat_name)
-                            break
-                    if found_item:
-                        break
-                if found_item:
+        for c_key, c_info in courses.items():
+            for item in c_info.get("items", []):
+                if str(item.get("msg_id")) == str(msg_id):
+                    found_item = item
+                    found_course = c_info
                     break
-        else:
-            for c_key, c_info in courses.items():
-                for item in c_info.get("items", []):
-                    if str(item.get("msg_id")) == str(msg_id) or item.get("link") == full_link:
-                        found_item = item
-                        found_course = c_info
-                        break
-                if found_item:
-                    break
+            if found_item:
+                break
+
+        full_link = f"https://t.me/c/{raw_chat_id}/{thread_id}/{msg_id}" if thread_id else f"https://t.me/c/{raw_chat_id}/{msg_id}"
 
         if found_item and found_course:
-            icon = found_item.get("icon", "📚")
+            icon = "🎬" if found_item.get("type") == "video" else "📚"
             reply_text = (
                 f"🔍 **INDEXED VAULT FILE FOUND!**\n\n"
                 f"📁 **Category:** {cat_name}\n"
@@ -860,7 +846,7 @@ async def open_link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             reply_text = (
                 f"🔍 **TELEGRAM JUMP LINK INSPECTOR**\n\n"
-                f"📁 **Target:** `{target_key}`\n"
+                f"📁 **Chat ID:** `{full_chat_id}`\n"
                 f"🆔 **Message ID:** `{msg_id}`\n"
                 f"📍 **Thread ID:** `{thread_id if thread_id else 'Main Chat'}`\n\n"
                 f"🔗 **Direct Link:** [{full_link}]({full_link})\n\n"
@@ -875,7 +861,7 @@ async def handle_direct_link_paste(update: Update, context: ContextTypes.DEFAULT
         return
 
     text = msg.text or ""
-    if "t.me/" in text:
+    if "t.me/c/" in text:
         if await is_admin_or_owner(update, context):
             await open_link_command(update, context)
 
@@ -915,8 +901,7 @@ async def handle_vault_browser_callback(update: Update, context: ContextTypes.DE
     await query.answer()
     data = query.data
     if data.startswith("browsechat_"):
-        chat_id_raw = data.replace("browsechat_", "")
-        chat_id = int(chat_id_raw) if chat_id_raw.lstrip('-').isdigit() else chat_id_raw
+        chat_id = int(data.replace("browsechat_", ""))
         chat_data = VAULT_STATE.get(chat_id, {})
         cat_name = chat_data.get("category_name", "Vault")
         courses = chat_data.get("courses", {})
@@ -936,8 +921,7 @@ async def handle_vault_browser_callback(update: Update, context: ContextTypes.DE
 
     elif data.startswith("browsetit_"):
         parts = data.split("_", 2)
-        chat_id_raw = parts[1]
-        chat_id = int(chat_id_raw) if chat_id_raw.lstrip('-').isdigit() else chat_id_raw
+        chat_id = int(parts[1])
         short_key = parts[2]
         chat_data = VAULT_STATE.get(chat_id, {})
         courses = chat_data.get("courses", {})
@@ -971,7 +955,7 @@ async def handle_vault_browser_callback(update: Update, context: ContextTypes.DE
 
         await query.edit_message_text("🔍 **VAULT CONTENT & FILE INSPECTOR**", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# ================= DYNAMIC ROOM BINDING COMMANDS (MULTI-TENANT) =================
+# ================= DYNAMIC ROOM BINDING COMMANDS (REAL-TIME FIXES) =================
 
 async def set_hub_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
@@ -981,35 +965,46 @@ async def set_hub_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not await is_admin_or_owner(update, context):
-        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nOnly administrators or room owners can set room roles.", parse_mode="Markdown")
+        await msg.reply_text(
+            "⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\n"
+            "Only administrators or room owners can set room roles.",
+            parse_mode="Markdown"
+        )
         return
 
     owner_id = user.id if user else (GLOBAL_CONFIG.get("chat_tenant_map", {}).get(str(chat.id)) or SUPER_ADMIN_IDS[0])
     tenant_cfg = get_tenant_config(owner_id)
-    chat_str = str(chat.id)
+    
     args = [a.lower() for a in context.args] if context.args else []
+    
+    target_chat_id = chat.id
+    if context.args and context.args[0].lstrip('-').isdigit():
+        target_chat_id = int(context.args[0])
 
-    if any(kw in args for kw in ["remove", "clear", "unset", "off", "del"]) or (tenant_cfg.get("main_hub_id") == chat.id and not args):
+    chat_str = str(target_chat_id)
+
+    if any(kw in args for kw in ["remove", "clear", "unset", "off", "del"]) or (tenant_cfg.get("main_hub_id") == target_chat_id and not args):
         tenant_cfg["main_hub_id"] = 0
         GLOBAL_CONFIG.get("chat_tenant_map", {}).pop(chat_str, None)
         save_config(GLOBAL_CONFIG)
         await msg.reply_text("🗑️ Chat **unbound / removed** as your Main Hub Directory!", parse_mode="Markdown")
         return
 
-    tenant_cfg["main_hub_id"] = chat.id
+    tenant_cfg["main_hub_id"] = target_chat_id
     GLOBAL_CONFIG.setdefault("chat_tenant_map", {})[chat_str] = owner_id
     save_config(GLOBAL_CONFIG)
 
     owner_name = user.full_name if user else "Admin"
-    clean_chat_id = str(chat.id).replace("-100", "")
-    room_link = f"https://t.me/{chat.username}" if chat.username else f"https://t.me/c/{clean_chat_id}"
+    clean_chat_id = str(target_chat_id).replace("-100", "").lstrip("-")
+    room_link = f"https://t.me/c/{clean_chat_id}" if chat.type != "private" else "Private DM"
 
     await msg.reply_text(
-        f"✅ **SUCCESS!** Current chat registered as **YOUR MAIN HUB DIRECTORY**!\n\n"
-        f"📍 **Room Name:** `{chat.title if chat.title else 'Main Hub'}`\n"
-        f"🆔 **Room ID:** `{chat.id}`\n"
+        f"✅ **REAL-TIME SUCCESS!** Room registered as **YOUR MAIN HUB DIRECTORY**!\n\n"
+        f"📍 **Room Title:** `{chat.title if chat.title else 'Main Hub'}`\n"
+        f"🆔 **Room ID:** `{target_chat_id}`\n"
         f"🔗 **Room Link:** [{room_link}]({room_link})\n"
         f"👤 **Vault Owner ID:** `{owner_id}` ({owner_name})\n\n"
+        "💡 _All auto-indexed jump links and master bundle posts will now post directly here!_\n"
         "💡 _To unbind later, type `/sethub remove` or `/sethub` again in this chat._",
         parse_mode="Markdown",
         disable_web_page_preview=True
@@ -1023,36 +1018,46 @@ async def set_admin_group_command(update: Update, context: ContextTypes.DEFAULT_
         return
 
     if not await is_admin_or_owner(update, context):
-        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
+        await msg.reply_text(
+            "⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\n"
+            "Administrator permission required.",
+            parse_mode="Markdown"
+        )
         return
 
     owner_id = user.id if user else (GLOBAL_CONFIG.get("chat_tenant_map", {}).get(str(chat.id)) or SUPER_ADMIN_IDS[0])
     tenant_cfg = get_tenant_config(owner_id)
-    chat_str = str(chat.id)
+    
     args = [a.lower() for a in context.args] if context.args else []
 
-    if any(kw in args for kw in ["remove", "clear", "unset", "off", "del"]) or (tenant_cfg.get("admin_proof_group_id") == chat.id and not args):
+    target_chat_id = chat.id
+    if context.args and context.args[0].lstrip('-').isdigit():
+        target_chat_id = int(context.args[0])
+
+    chat_str = str(target_chat_id)
+
+    if any(kw in args for kw in ["remove", "clear", "unset", "off", "del"]) or (tenant_cfg.get("admin_proof_group_id") == target_chat_id and not args):
         tenant_cfg["admin_proof_group_id"] = 0
         GLOBAL_CONFIG.get("chat_tenant_map", {}).pop(chat_str, None)
         save_config(GLOBAL_CONFIG)
         await msg.reply_text("🗑️ Group **unbound / removed** as your Admin Verification Group!", parse_mode="Markdown")
         return
 
-    tenant_cfg["admin_proof_group_id"] = chat.id
+    tenant_cfg["admin_proof_group_id"] = target_chat_id
     GLOBAL_CONFIG.setdefault("chat_tenant_map", {})[chat_str] = owner_id
     save_config(GLOBAL_CONFIG)
 
     owner_name = user.full_name if user else "Admin"
-    clean_chat_id = str(chat.id).replace("-100", "")
-    room_link = f"https://t.me/{chat.username}" if chat.username else f"https://t.me/c/{clean_chat_id}"
+    clean_chat_id = str(target_chat_id).replace("-100", "").lstrip("-")
+    room_link = f"https://t.me/c/{clean_chat_id}" if chat.type != "private" else "Private DM"
 
     await msg.reply_text(
-        f"✅ **SUCCESS!** Current group registered as **YOUR ADMIN VERIFICATION GROUP**!\n\n"
-        f"📍 **Group Name:** `{chat.title if chat.title else 'Admin Review Group'}`\n"
-        f"🆔 **Group ID:** `{chat.id}`\n"
+        f"✅ **REAL-TIME SUCCESS!** Group registered as **YOUR ADMIN VERIFICATION GROUP**!\n\n"
+        f"📍 **Group Title:** `{chat.title if chat.title else 'Admin Review Group'}`\n"
+        f"🆔 **Group ID:** `{target_chat_id}`\n"
         f"🔗 **Group Link:** [{room_link}]({room_link})\n"
         f"👤 **Vault Owner ID:** `{owner_id}` ({owner_name})\n\n"
-        "💡 _Receipt screenshot submissions from your customers will be forwarded here for approval!_",
+        "💡 _Customer receipt screenshots will be instantly forwarded here with Approve/Reject action buttons!_",
         parse_mode="Markdown",
         disable_web_page_preview=True
     )
@@ -1065,73 +1070,49 @@ async def set_proof_archive_command(update: Update, context: ContextTypes.DEFAUL
         return
 
     if not await is_admin_or_owner(update, context):
-        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
+        await msg.reply_text(
+            "⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\n"
+            "Administrator permission required.",
+            parse_mode="Markdown"
+        )
         return
 
     owner_id = user.id if user else (GLOBAL_CONFIG.get("chat_tenant_map", {}).get(str(chat.id)) or SUPER_ADMIN_IDS[0])
     tenant_cfg = get_tenant_config(owner_id)
-    chat_str = str(chat.id)
+    
     args = [a.lower() for a in context.args] if context.args else []
 
-    if any(kw in args for kw in ["remove", "clear", "unset", "off", "del"]) or (tenant_cfg.get("proof_archive_id") == chat.id and not args):
+    target_chat_id = chat.id
+    if context.args and context.args[0].lstrip('-').isdigit():
+        target_chat_id = int(context.args[0])
+
+    chat_str = str(target_chat_id)
+
+    if any(kw in args for kw in ["remove", "clear", "unset", "off", "del"]) or (tenant_cfg.get("proof_archive_id") == target_chat_id and not args):
         tenant_cfg["proof_archive_id"] = 0
         GLOBAL_CONFIG.get("chat_tenant_map", {}).pop(chat_str, None)
         save_config(GLOBAL_CONFIG)
         await msg.reply_text("🗑️ Chat **unbound / removed** as your Proof Archive!", parse_mode="Markdown")
         return
 
-    tenant_cfg["proof_archive_id"] = chat.id
+    tenant_cfg["proof_archive_id"] = target_chat_id
     GLOBAL_CONFIG.setdefault("chat_tenant_map", {})[chat_str] = owner_id
     save_config(GLOBAL_CONFIG)
 
     owner_name = user.full_name if user else "Admin"
-    clean_chat_id = str(chat.id).replace("-100", "")
-    room_link = f"https://t.me/{chat.username}" if chat.username else f"https://t.me/c/{clean_chat_id}"
+    clean_chat_id = str(target_chat_id).replace("-100", "").lstrip("-")
+    room_link = f"https://t.me/c/{clean_chat_id}" if chat.type != "private" else "Private DM"
 
     await msg.reply_text(
-        f"✅ **SUCCESS!** Current chat registered as **YOUR PROOF ARCHIVE**!\n\n"
-        f"📍 **Archive Name:** `{chat.title if chat.title else 'Proof Archive'}`\n"
-        f"🆔 **Archive ID:** `{chat.id}`\n"
+        f"✅ **REAL-TIME SUCCESS!** Chat registered as **YOUR PROOF ARCHIVE**!\n\n"
+        f"📍 **Archive Title:** `{chat.title if chat.title else 'Proof Archive'}`\n"
+        f"🆔 **Archive ID:** `{target_chat_id}`\n"
         f"🔗 **Archive Link:** [{room_link}]({room_link})\n"
-        f"👤 **Vault Owner ID:** `{owner_id}` ({owner_name})",
+        f"👤 **Vault Owner ID:** `{owner_id}` ({owner_name})\n\n"
+        "💡 _Once receipts are approved by admins, copies will be automatically archived here!_",
         parse_mode="Markdown",
         disable_web_page_preview=True
     )
-
-async def handle_admin_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    data = query.data.split("_")
-    action = data[0]
-    buyer_id = int(data[1])
-    owner_id = int(data[2]) if len(data) > 2 else query.from_user.id
-
-    tenant_cfg = get_tenant_config(owner_id)
-    main_hub_id = tenant_cfg.get("main_hub_id")
-    proof_archive_id = tenant_cfg.get("proof_archive_id")
-
-    if action == "approve":
-        if not main_hub_id:
-            await query.message.reply_text("⚠️ **Error:** Main Directory Hub is not set yet! Run `/sethub` in your Main Hub group/channel.")
-            return
-
-        try:
-            invite_link = await context.bot.create_chat_invite_link(chat_id=main_hub_id, member_limit=1)
-            await context.bot.send_message(chat_id=buyer_id, text=f"🎉 **Payment Approved!**\n\nWelcome! Click your single-use invite link to join the Main Hub:\n{invite_link.invite_link}")
-            await query.edit_message_caption(caption=f"{query.message.caption}\n\nSTATUS: ✅ **APPROVED BY ADMIN**")
-
-            if proof_archive_id:
-                try:
-                    await context.bot.forward_message(chat_id=proof_archive_id, from_chat_id=query.message.chat_id, message_id=query.message.message_id)
-                except Exception as p_err:
-                    logger.error(f"Failed to forward proof to archive {proof_archive_id}: {p_err}")
-        except Exception as e:
-            logger.error(f"Approval error: {e}")
-            await query.message.reply_text(f"❌ Approval error: {e}\n(Make sure the bot is an Admin in your Main Hub and has 'Invite Users via Link' permission!)")
-    elif action == "reject":
-        await context.bot.send_message(chat_id=buyer_id, text="❌ **Verification failed.** Please check your reference number and submit a clear screenshot.")
-        await query.edit_message_caption(caption=f"{query.message.caption}\n\nSTATUS: ❌ **REJECTED BY ADMIN**")
 
 # ================= ADMIN CONTROL DESK & PROFILE SETUP =================
 
@@ -1311,73 +1292,180 @@ async def payment_option_selected(update: Update, context: ContextTypes.DEFAULT_
         parts = data.split("_", 2)
         owner_id = int(parts[1])
         method = parts[2]
-        context.user_data["active_owner_id"] = owner_id
         tenant_cfg = get_tenant_config(owner_id)
     else:
         method = data
-        owner_id = context.user_data.get("active_owner_id", query.from_user.id)
+        owner_id = query.from_user.id
         tenant_cfg = get_tenant_config(owner_id)
+
+    context.user_data["active_owner_id"] = owner_id
 
     instructions = tenant_cfg.get("payments", {}).get(method, "Payment details not configured.")
     instructions_text = f"{instructions}\n\n📸 **INSTRUCTIONS:** Send your receipt screenshot directly here."
     await query.edit_message_text(instructions_text, parse_mode="Markdown")
+
+# ================= REAL-TIME RECEIPT FORWARDING & APPROVAL =================
 
 async def handle_photo_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     if not msg or msg.chat.type != "private":
         return
 
-    user = update.message.from_user
-    photo_file_id = update.message.photo[-1].file_id
+    user = msg.from_user
+    
+    # Extract photo ID from photo upload or image document
+    if msg.photo:
+        photo_file_id = msg.photo[-1].file_id
+    elif msg.document and (msg.document.mime_type or "").startswith("image/"):
+        photo_file_id = msg.document.file_id
+    else:
+        return
 
+    # Determine store owner ID
     owner_id = context.user_data.get("active_owner_id")
     if not owner_id:
-        chat_owner_id, tenant_cfg = get_tenant_by_chat(update.effective_chat.id)
-        owner_id = chat_owner_id if chat_owner_id else user.id
+        chat_owner_id, tenant_cfg = get_tenant_by_chat(msg.chat.id)
+        owner_id = chat_owner_id if chat_owner_id else None
+
+    if not owner_id:
+        tenants = GLOBAL_CONFIG.get("tenants", {})
+        if tenants:
+            for t_id, t_data in tenants.items():
+                if t_data.get("admin_proof_group_id") or t_data.get("main_hub_id"):
+                    owner_id = int(t_id)
+                    break
+            if not owner_id:
+                owner_id = int(list(tenants.keys())[0])
+        else:
+            owner_id = SUPER_ADMIN_IDS[0]
 
     tenant_cfg = get_tenant_config(owner_id)
     admin_group_id = tenant_cfg.get("admin_proof_group_id")
 
-    if not admin_group_id:
-        for t_id, t_data in GLOBAL_CONFIG.get("tenants", {}).items():
-            if t_data.get("admin_proof_group_id"):
-                admin_group_id = t_data.get("admin_proof_group_id")
-                tenant_cfg = t_data
-                owner_id = int(t_id)
-                break
-
-    if not admin_group_id:
-        await update.message.reply_text(
-            "⚠️ Payment verification group is not configured for this store yet.\n"
-            "An administrator must run `/setadmin` in the review group."
-        )
-        return
-
     keyboard = [
-        [InlineKeyboardButton("✅ Approve", callback_data=f"approve_{user.id}_{owner_id}"), InlineKeyboardButton("❌ Reject", callback_data=f"reject_{user.id}_{owner_id}")]
+        [
+            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{user.id}_{owner_id}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{user.id}_{owner_id}")
+        ]
     ]
     
-    try:
-        await context.bot.send_photo(
-            chat_id=admin_group_id,
+    caption_text = (
+        f"📥 **NEW RECEIPT SUBMISSION**\n\n"
+        f"👤 **Buyer:** {user.full_name}\n"
+        f"🆔 **Buyer User ID:** `{user.id}`\n"
+        f"💬 **Username:** @{user.username if user.username else 'N/A'}\n"
+        f"👑 **Store Owner ID:** `{owner_id}`"
+    )
+
+    sent_successfully = False
+
+    # 1. Primary Route: Forward to Admin Verification Group (/setadmin)
+    if admin_group_id and admin_group_id != 0:
+        res = await safe_send_photo(
+            bot=context.bot,
+            chat_id=int(admin_group_id),
             photo=photo_file_id,
-            caption=f"📥 **NEW RECEIPT SUBMISSION**\n👤 **Buyer:** {user.full_name} (`{user.id}`)\n💬 **Username:** @{user.username if user.username else 'N/A'}",
+            caption=caption_text,
             reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown",
+            parse_mode="Markdown"
         )
+        if res:
+            sent_successfully = True
+
+    # 2. Fallback: Forward directly to Store Owner / Admin Private Telegram DM
+    if not sent_successfully:
+        res = await safe_send_photo(
+            bot=context.bot,
+            chat_id=int(owner_id),
+            photo=photo_file_id,
+            caption=f"⚠️ **ADMIN GROUP NOT SET OR UNREACHABLE**\nForwarded directly to Store Owner DM:\n\n{caption_text}",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+        if res:
+            sent_successfully = True
+        else:
+            for sa_id in SUPER_ADMIN_IDS:
+                if sa_id != owner_id:
+                    res_sa = await safe_send_photo(
+                        bot=context.bot,
+                        chat_id=int(sa_id),
+                        photo=photo_file_id,
+                        caption=f"⚠️ **SUPER ADMIN FALLBACK**\n\n{caption_text}",
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode="Markdown"
+                    )
+                    if res_sa:
+                        sent_successfully = True
+                        break
+
+    if sent_successfully:
         template = tenant_cfg["messages"].get("receipt", DEFAULT_TENANT_CONFIG["messages"]["receipt"])
-        await update.message.reply_text(template.replace("{name}", user.full_name), parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"Error forwarding photo receipt to admin group {admin_group_id}: {e}")
-        await update.message.reply_text(
-            "⚠️ Unable to forward receipt screenshot to verification group. Please inform the store admin."
+        await msg.reply_text(template.replace("{name}", user.full_name), parse_mode="Markdown")
+    else:
+        await msg.reply_text(
+            "⚠️ **Notice:** Payment verification destination is not configured for this store yet.\n"
+            "An administrator must run `/setadmin` in the review group."
         )
+
+async def handle_admin_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data.split("_")
+    action = data[0]
+    buyer_id = int(data[1])
+    owner_id = int(data[2]) if len(data) > 2 else query.from_user.id
+
+    tenant_cfg = get_tenant_config(owner_id)
+    main_hub_id = tenant_cfg.get("main_hub_id")
+    proof_archive_id = tenant_cfg.get("proof_archive_id")
+
+    if action == "approve":
+        if not main_hub_id or main_hub_id == 0:
+            await query.message.reply_text(
+                "⚠️ **Error:** Main Directory Hub is not set yet! Run `/sethub` inside your Main Hub group or channel."
+            )
+            return
+
+        try:
+            invite_link = await context.bot.create_chat_invite_link(chat_id=int(main_hub_id), member_limit=1)
+            await context.bot.send_message(
+                chat_id=buyer_id, 
+                text=f"🎉 **Payment Approved!**\n\nWelcome! Click your single-use invite link to join the Main Directory Hub:\n{invite_link.invite_link}"
+            )
+            await query.edit_message_caption(caption=f"{query.message.caption}\n\nSTATUS: ✅ **APPROVED BY ADMIN**")
+
+            # Forward approved proof screenshot to Proof Archive channel/group (/setproof) upon approval
+            if proof_archive_id and proof_archive_id != 0:
+                try:
+                    await context.bot.forward_message(
+                        chat_id=int(proof_archive_id), 
+                        from_chat_id=query.message.chat_id, 
+                        message_id=query.message.message_id
+                    )
+                except Exception as p_err:
+                    logger.error(f"Failed to forward proof to archive {proof_archive_id}: {p_err}")
+        except Exception as e:
+            logger.error(f"Approval error: {e}")
+            await query.message.reply_text(
+                f"❌ Approval error: {e}\n(Ensure bot is an Admin in your Main Hub and has 'Invite Users via Link' permission!)"
+            )
+    elif action == "reject":
+        try:
+            await context.bot.send_message(
+                chat_id=buyer_id, 
+                text="❌ **Verification Failed.** Please double-check your payment reference number and submit a clear receipt screenshot."
+            )
+        except Exception as err:
+            logger.error(f"Failed sending rejection to buyer {buyer_id}: {err}")
+        await query.edit_message_caption(caption=f"{query.message.caption}\n\nSTATUS: ❌ **REJECTED BY ADMIN**")
 
 # ================= SECURITY THREAT DETECTOR & GROUP MODERATION =================
 
 async def security_threat_detector(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
-    if not msg or not msg.from_user or msg.from_user.is_bot:
+    if not msg or not msg.from_user:
         return
 
     chat = msg.chat
@@ -1385,7 +1473,7 @@ async def security_threat_detector(update: Update, context: ContextTypes.DEFAULT
         return
 
     user = msg.from_user
-    if is_super_admin(user.id):
+    if is_super_admin(user.id) or await is_admin_or_owner(update, context):
         return
 
     text_content = (msg.text or msg.caption or "").lower()
@@ -1401,7 +1489,7 @@ async def security_threat_detector(update: Update, context: ContextTypes.DEFAULT
             break
 
     if msg.document:
-        doc_name = msg.document.file_name.lower()
+        doc_name = (msg.document.file_name or "").lower()
         for ext in sec_cfg["suspicious_extensions"]:
             if doc_name.endswith(ext):
                 threat_detected = True
@@ -1459,7 +1547,7 @@ async def handle_security_kick_decision(update: Update, context: ContextTypes.DE
 
 async def group_moderation_guard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
-    if not msg or not msg.from_user or msg.from_user.is_bot:
+    if not msg or not msg.from_user:
         return
 
     chat = msg.chat
@@ -1515,7 +1603,7 @@ async def add_bad_word_command(update: Update, context: ContextTypes.DEFAULT_TYP
     else:
         await msg.reply_text(f"ℹ️ Word `{word}` is already in the blocklist.")
 
-# ================= AUTOMATED CONTENT INDEXING (ALL FILE TYPES) =================
+# ================= AUTOMATED CONTENT INDEXING (REAL-TIME) =================
 
 async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     post = update.channel_post or update.message
@@ -1530,7 +1618,7 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     extracted_text = post.text or post.caption or ""
 
-    # 2. STRICT BOT MESSAGE / LOOP PREVENTION: Detect bot index outputs
+    # 2. STRICT BOT MESSAGE / LOOP PREVENTION
     bot_index_markers = [
         "📌 **", "🔄 **", "👉 _", "INDEXED VAULT FILE", "📁 **Category:", "📖 **Module:",
         "🎬 **#", "📚 **#", "📦 **#", "💻 **#", "🖼️ **#", "🎵 **#", "🎞️ **#",
@@ -1545,13 +1633,13 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = post.chat_id
     chat_id_str = str(chat_id)
 
-    # 3. STRICT ROOM GUARD: Prevent indexing loop in Main Hub, Admin Group, or Proof Archive for ALL tenants
+    # 3. ROOM GUARD: Ignore posts made inside designated Hub, Admin Review Group, or Proof Archive
     for t_data in GLOBAL_CONFIG.get("tenants", {}).values():
-        h_id = str(t_data.get("main_hub_id", 0))
-        a_id = str(t_data.get("admin_proof_group_id", 0))
-        p_id = str(t_data.get("proof_archive_id", 0))
+        h_id = t_data.get("main_hub_id")
+        a_id = t_data.get("admin_proof_group_id")
+        p_id = t_data.get("proof_archive_id")
 
-        if chat_id_str in [h_id, a_id, p_id, "0"] or chat_id in [t_data.get("main_hub_id"), t_data.get("admin_proof_group_id"), t_data.get("proof_archive_id"), 0]:
+        if chat_id in [h_id, a_id, p_id] and chat_id != 0:
             return
 
     owner_id, tenant_cfg = get_tenant_by_chat(chat_id)
@@ -1571,14 +1659,14 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
     main_hub_id = tenant_cfg.get("main_hub_id")
-    if not main_hub_id or str(chat_id) == str(main_hub_id):
+    if not main_hub_id or chat_id == main_hub_id:
         return
 
     category_name = post.chat.title if post.chat.title else "Vault Content"
-    clean_chat_id = chat_id_str.replace("-100", "")
+    clean_chat_id = chat_id_str.replace("-100", "").lstrip("-")
     thread_id = getattr(post, "message_thread_id", None)
 
-    # Store channel record using integer chat_id or string key
+    # Store channel record using integer chat_id
     chat_key = chat_id
     if chat_key not in VAULT_STATE:
         VAULT_STATE[chat_key] = {"category_name": category_name, "active_course": "General Library", "courses": {}}
@@ -1593,7 +1681,7 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if raw_title.startswith("/"):
             return
 
-        # In groups, only process text titles if posted by an admin/owner to avoid chat message spam
+        # In groups, only process text titles if posted by an admin/owner
         if post.chat.type in ["group", "supergroup"]:
             if not await is_admin_or_owner(update, context):
                 return
@@ -1609,10 +1697,12 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status_msg = f"🔄 **RE-OPENED MODULE IN {category_name.upper()}**\n\n📖 **Title:** `{raw_title}`\n📊 **Current Total Files:** {current_count}"
 
         save_state(VAULT_STATE)
-        try:
-            await context.bot.send_message(chat_id=main_hub_id, text=f"{status_msg}\n────────────────────────────────────────", parse_mode="Markdown")
-        except Exception as e:
-            logger.error(f"Failed to post module header to hub {main_hub_id}: {e}")
+        await safe_send_message(
+            bot=context.bot,
+            chat_id=int(main_hub_id),
+            text=f"{status_msg}\n────────────────────────────────────────",
+            parse_mode="Markdown"
+        )
         return
 
     # CASE 2: Uploaded Content (Videos, Ebooks, APKs, EXEs, Source Code, Audio, Photos, Documents)
@@ -1668,7 +1758,7 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         caption_title = extracted_text.split("\n")[0] if extracted_text else default_label
         
-        # Build direct link supporting public usernames (e.g. A_TOOLSx2) and private channel IDs
+        # Build direct jump link supporting public channel usernames and private channel IDs
         if post.chat.username:
             direct_link = f"https://t.me/{post.chat.username}/{thread_id}/{post.message_id}" if thread_id else f"https://t.me/{post.chat.username}/{post.message_id}"
         else:
@@ -1692,10 +1782,13 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👉 _Click the link above to jump directly to this material!_"
         )
 
-        try:
-            await context.bot.send_message(chat_id=main_hub_id, text=lesson_entry, parse_mode="Markdown", disable_web_page_preview=True)
-        except Exception as e:
-            logger.error(f"Failed to post index entry to main hub {main_hub_id}: {e}")
+        await safe_send_message(
+            bot=context.bot,
+            chat_id=int(main_hub_id),
+            text=lesson_entry,
+            parse_mode="Markdown",
+            disable_web_page_preview=True
+        )
 
 # ================= ADVANCED MODULE GROUPING & RENAMING =================
 
@@ -1733,7 +1826,7 @@ async def group_module_command(update: Update, context: ContextTypes.DEFAULT_TYP
         bundle_text += f"• Part {idx}: {item}\n"
 
     bundle_text += "\n👉 _All selected lessons bundled into one master link!_"
-    await context.bot.send_message(chat_id=main_hub_id, text=bundle_text, parse_mode="Markdown")
+    await safe_send_message(context.bot, int(main_hub_id), bundle_text, parse_mode="Markdown")
     await msg.reply_text(f"✅ Bundle `{master_title}` created and posted to Main Hub!")
 
 async def rename_item_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1796,8 +1889,7 @@ async def handle_del_index_callback(update: Update, context: ContextTypes.DEFAUL
     await query.answer()
 
     parts = query.data.split("_", 2)
-    chat_id_raw = parts[1]
-    chat_id = int(chat_id_raw) if chat_id_raw.lstrip('-').isdigit() else chat_id_raw
+    chat_id = int(parts[1])
     short_key = parts[2]
 
     if chat_id in VAULT_STATE:
@@ -1937,15 +2029,13 @@ async def handle_promotion_callback(update: Update, context: ContextTypes.DEFAUL
         await query.edit_message_text("❌ Promotion cancelled.")
         return
 
-    target_chats = list(VAULT_STATE.keys()) if target == "ALL" else [int(target) if target.lstrip('-').isdigit() else target]
+    target_chats = list(VAULT_STATE.keys()) if target == "ALL" else [int(target)]
     sent_count = 0
 
     for c_id in target_chats:
-        try:
-            await context.bot.send_message(chat_id=c_id, text=promo_text, parse_mode="Markdown")
+        res = await safe_send_message(context.bot, c_id, promo_text, parse_mode="Markdown")
+        if res:
             sent_count += 1
-        except Exception as e:
-            logger.error(f"Failed promotion post: {e}")
 
     await query.edit_message_text(f"🚀 Promotion sent to {sent_count} target location(s)!")
 
@@ -2031,13 +2121,14 @@ bot_app.add_handler(CallbackQueryHandler(payment_option_selected, pattern="^(pay
 bot_app.add_handler(CallbackQueryHandler(handle_admin_approval, pattern="^(approve|reject)_"))
 bot_app.add_handler(CallbackQueryHandler(handle_security_kick_decision, pattern="^seckick_"))
 
-bot_app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo_receipt))
+# Receipts & Group Auto-Indexing Handlers
+bot_app.add_handler(MessageHandler((filters.PHOTO | filters.Document.IMAGE) & ~filters.COMMAND, handle_photo_receipt))
 bot_app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, handle_new_chat_members))
 bot_app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND, handle_direct_link_paste))
 
 bot_app.add_handler(MessageHandler((filters.TEXT | filters.Document.ALL) & ~filters.COMMAND & filters.ChatType.GROUPS, security_threat_detector), group=0)
 bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, group_moderation_guard), group=1)
-bot_app.add_handler(MessageHandler(filters.ChatType.GROUPS | filters.ChatType.CHANNEL, auto_index_posts), group=2)
+bot_app.add_handler(MessageHandler((filters.ChatType.GROUPS | filters.ChatType.CHANNEL) & ~filters.COMMAND, auto_index_posts), group=2)
 
 # Persistent Event Loop Manager for Webhook Processing
 loop = asyncio.new_event_loop()
@@ -2048,12 +2139,9 @@ loop.run_until_complete(bot_app.start())
 
 @app.route(f"/{ACTIVE_BOT_TOKEN}", methods=["POST"])
 def webhook():
-    try:
-        json_data = request.get_json(force=True)
-        update = Update.de_json(data=json_data, bot=bot_app.bot)
-        loop.run_until_complete(bot_app.process_update(update))
-    except Exception as e:
-        logger.error(f"Error processing update: {e}")
+    json_data = request.get_json(force=True)
+    update = Update.de_json(data=json_data, bot=bot_app.bot)
+    loop.run_until_complete(bot_app.process_update(update))
     return jsonify({"status": "ok"}), 200
 
 @app.route("/", methods=["GET"])
