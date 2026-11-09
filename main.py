@@ -1044,70 +1044,6 @@ async def handle_admin_approval(update: Update, context: ContextTypes.DEFAULT_TY
         await context.bot.send_message(chat_id=buyer_id, text="❌ **Verification failed.** Please check your reference number and submit a clear screenshot.")
         await query.edit_message_caption(caption=f"{query.message.caption}\n\nSTATUS: ❌ **REJECTED BY ADMIN**")
 
-    msg = update.effective_message
-    user = update.effective_user
-    chat = update.effective_chat
-    if not msg or not chat or not user:
-        return
-
-    if not await is_admin_or_owner(update, context):
-        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
-        return
-
-    tenant_cfg = get_tenant_config(user.id)
-    chat_str = str(chat.id)
-    args = [a.lower() for a in context.args] if context.args else []
-
-    if any(kw in args for kw in ["remove", "clear", "unset", "off", "del"]) or (tenant_cfg.get("admin_proof_group_id") == chat.id and not args):
-        tenant_cfg["admin_proof_group_id"] = 0
-        GLOBAL_CONFIG.get("chat_tenant_map", {}).pop(chat_str, None)
-        save_config(GLOBAL_CONFIG)
-        await msg.reply_text("🗑️ Group **unbound / removed** as your Admin Verification Group!", parse_mode="Markdown")
-        return
-
-    tenant_cfg["admin_proof_group_id"] = chat.id
-    GLOBAL_CONFIG.setdefault("chat_tenant_map", {})[chat_str] = user.id
-    save_config(GLOBAL_CONFIG)
-
-    await msg.reply_text(
-        f"✅ **SUCCESS!** Current group (`{chat.id}`) registered as **YOUR ADMIN VERIFICATION GROUP**!\n"
-        f"👤 **Vault Owner:** {user.full_name} (`{user.id}`)\n\n"
-        "💡 _Receipt screenshot submissions from your customers will be forwarded here for approval!_",
-        parse_mode="Markdown"
-    )
-
-async def set_proof_archive_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.effective_message
-    user = update.effective_user
-    chat = update.effective_chat
-    if not msg or not chat or not user:
-        return
-
-    if not await is_admin_or_owner(update, context):
-        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
-        return
-
-    tenant_cfg = get_tenant_config(user.id)
-    chat_str = str(chat.id)
-    args = [a.lower() for a in context.args] if context.args else []
-
-    if any(kw in args for kw in ["remove", "clear", "unset", "off", "del"]) or (tenant_cfg.get("proof_archive_id") == chat.id and not args):
-        tenant_cfg["proof_archive_id"] = 0
-        GLOBAL_CONFIG.get("chat_tenant_map", {}).pop(chat_str, None)
-        save_config(GLOBAL_CONFIG)
-        await msg.reply_text("🗑️ Chat **unbound / removed** as your Proof Archive!", parse_mode="Markdown")
-        return
-
-    tenant_cfg["proof_archive_id"] = chat.id
-    GLOBAL_CONFIG.setdefault("chat_tenant_map", {})[chat_str] = user.id
-    save_config(GLOBAL_CONFIG)
-
-    await msg.reply_text(
-        f"✅ **SUCCESS!** Current chat (`{chat.id}`) registered as **YOUR PROOF ARCHIVE**!\n"
-        f"👤 **Vault Owner:** {user.full_name} (`{user.id}`)",
-        parse_mode="Markdown"
-    )
-
 # ================= ADMIN CONTROL DESK & PROFILE SETUP =================
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1344,6 +1280,78 @@ async def handle_photo_receipt(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.error(f"Error forwarding photo receipt to admin group {admin_group_id}: {e}")
         await update.message.reply_text(
             "⚠️ Unable to forward receipt screenshot to verification group. Please inform the store admin."
+        )
+
+        for s_admin_id in GLOBAL_CONFIG.get("super_admin_ids", SUPER_ADMIN_IDS):
+            try:
+            await context.bot.send_photo(
+                chat_id=admin_group_id,
+                photo=photo_file_id,
+                caption=f"📥 **NEW RECEIPT SUBMISSION**\n👤 **Buyer:** {user.full_name} (`{user.id}`)\n💬 **Username:** @{user.username if user.username else 'N/A'}",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown",
+            )
+            template = tenant_cfg["messages"].get("receipt", DEFAULT_TENANT_CONFIG["messages"]["receipt"])
+            await update.message.reply_text(template.replace("{name}", user.full_name), parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"Error forwarding photo receipt to admin group {admin_group_id}: {e}")
+            await update.message.reply_text(
+                "⚠️ Unable to forward receipt screenshot to verification group. Please inform the store admin."
+            )
+
+# ================= SECURITY THREAT DETECTOR & GROUP MODERATION =================
+
+async def security_threat_detector(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    if not msg or not msg.from_user:
+        return
+
+    chat = msg.chat
+    if chat.type not in ["group", "supergroup"]:
+        return
+
+    user = msg.from_user
+    if is_super_admin(user.id):
+        return
+
+    text_content = (msg.text or msg.caption or "").lower()
+    sec_cfg = DEFAULT_TENANT_CONFIG["security"]
+
+    threat_detected = False
+    violation_reason = ""
+
+    for keyword in sec_cfg["phishing_keywords"]:
+        if keyword in text_content:
+            threat_detected = True
+            violation_reason = f"Phishing keyword detected: `{keyword}`"
+            break
+
+    if msg.document:
+        doc_name = msg.document.file_name.lower()
+        for ext in sec_cfg["suspicious_extensions"]:
+            if doc_name.endswith(ext):
+                threat_detected = True
+                violation_reason = f"Suspicious file attachment: `{ext}`"
+                break
+
+    if threat_detected:
+        try:
+            await msg.delete()
+        except Exception as e:
+            logger.error(f"Failed to delete malicious message: {e}")
+
+        keyboard = [
+            [
+                InlineKeyboardButton("🥾 Kick & Ban User", callback_data=f"seckick_ban_{user.id}_{chat.id}"),
+                InlineKeyboardButton("🛡️ Keep & Dismiss", callback_data=f"seckick_keep_{user.id}")
+            ]
+        ]
+        alert_text = (
+            f"🚨 **SECURITY ALERT: POTENTIAL THREAT DETECTED!** 🚨\n\n"
+            f"👤 **User:** {user.full_name} (`{user.id}`)\n"
+            f"💬 **Group:** {chat.title} (`{chat.id}`)\n"
+            f"⚠️ **Reason:** {violation_reason}\n\n"
+            f"👉 Message was automatically deleted. Select action below:"
         )
 
         for s_admin_id in GLOBAL_CONFIG.get("super_admin_ids", SUPER_ADMIN_IDS):
