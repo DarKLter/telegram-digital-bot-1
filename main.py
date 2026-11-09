@@ -742,16 +742,18 @@ async def open_link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = msg.text or ""
-    links = re.findall(r"https://t\.me/c/(\d+)/(?:(\d+)/)?(\d+)", text)
+    # Support both private t.me/c/12345/45 and public t.me/username/45 links
+    pattern = r"https://t\.me/(?:c/(\d+)|([a-zA-Z0-9_]+))/(?:(\d+)/)?(\d+)"
+    links = re.findall(pattern, text)
 
     if not links and context.args:
         arg_text = " ".join(context.args)
-        links = re.findall(r"https://t\.me/c/(\d+)/(?:(\d+)/)?(\d+)", arg_text)
+        links = re.findall(pattern, arg_text)
 
     if not links:
         await msg.reply_text(
             "⚠️ **Usage:** Send or paste a Telegram jump link, e.g.:\n"
-            "`/openlink https://t.me/c/123456789/45`\n"
+            "`/openlink https://t.me/c/123456789/45` or `https://t.me/A_TOOLSx2/45`\n"
             "or paste the link directly in a private DM with the bot!",
             parse_mode="Markdown"
         )
@@ -759,11 +761,18 @@ async def open_link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for link_match in links:
         raw_chat_id = link_match[0]
-        thread_id = link_match[1] if link_match[1] else None
-        msg_id = link_match[2]
+        username = link_match[1]
+        thread_id = link_match[2] if link_match[2] else None
+        msg_id = link_match[3]
 
-        full_chat_id = int(f"-100{raw_chat_id}")
-        chat_data = VAULT_STATE.get(full_chat_id, {})
+        if username:
+            full_link = f"https://t.me/{username}/{thread_id}/{msg_id}" if thread_id else f"https://t.me/{username}/{msg_id}"
+            full_chat_id = f"@{username}"
+        else:
+            full_link = f"https://t.me/c/{raw_chat_id}/{thread_id}/{msg_id}" if thread_id else f"https://t.me/c/{raw_chat_id}/{msg_id}"
+            full_chat_id = int(f"-100{raw_chat_id}")
+
+        chat_data = VAULT_STATE.get(full_chat_id, {}) if isinstance(full_chat_id, int) else {}
         cat_name = chat_data.get("category_name", f"Chat {full_chat_id}")
         courses = chat_data.get("courses", {})
 
@@ -779,10 +788,8 @@ async def open_link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if found_item:
                 break
 
-        full_link = f"https://t.me/c/{raw_chat_id}/{thread_id}/{msg_id}" if thread_id else f"https://t.me/c/{raw_chat_id}/{msg_id}"
-
         if found_item and found_course:
-            icon = "🎬" if found_item.get("type") == "video" else "📚"
+            icon = found_item.get("icon", "📚")
             reply_text = (
                 f"🔍 **INDEXED VAULT FILE FOUND!**\n\n"
                 f"📁 **Category:** {cat_name}\n"
@@ -794,7 +801,7 @@ async def open_link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             reply_text = (
                 f"🔍 **TELEGRAM JUMP LINK INSPECTOR**\n\n"
-                f"📁 **Chat ID:** `{full_chat_id}`\n"
+                f"📁 **Target:** `{full_chat_id}`\n"
                 f"🆔 **Message ID:** `{msg_id}`\n"
                 f"📍 **Thread ID:** `{thread_id if thread_id else 'Main Chat'}`\n\n"
                 f"🔗 **Direct Link:** [{full_link}]({full_link})\n\n"
@@ -809,7 +816,7 @@ async def handle_direct_link_paste(update: Update, context: ContextTypes.DEFAULT
         return
 
     text = msg.text or ""
-    if "t.me/c/" in text:
+    if "t.me/" in text:
         if await is_admin_or_owner(update, context):
             await open_link_command(update, context)
 
@@ -1286,7 +1293,7 @@ async def handle_photo_receipt(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def security_threat_detector(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
-    if not msg or not msg.from_user:
+    if not msg or not msg.from_user or msg.from_user.is_bot:
         return
 
     chat = msg.chat
@@ -1368,7 +1375,7 @@ async def handle_security_kick_decision(update: Update, context: ContextTypes.DE
 
 async def group_moderation_guard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
-    if not msg or not msg.from_user:
+    if not msg or not msg.from_user or msg.from_user.is_bot:
         return
 
     chat = msg.chat
@@ -1431,7 +1438,16 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not post:
         return
 
+    if post.from_user and post.from_user.is_bot:
+        return
+
     chat_id = post.chat_id
+
+    # Prevent indexing loop / spamming in Main Hub, Admin Group, or Proof Archive for ALL tenants
+    for t_data in GLOBAL_CONFIG.get("tenants", {}).values():
+        if chat_id in [t_data.get("main_hub_id"), t_data.get("admin_proof_group_id"), t_data.get("proof_archive_id")]:
+            return
+
     owner_id, tenant_cfg = get_tenant_by_chat(chat_id)
     if not tenant_cfg:
         # Fallback to check if chat installer exists or assign default tenant
@@ -1450,7 +1466,7 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
     main_hub_id = tenant_cfg.get("main_hub_id")
-    if not main_hub_id or chat_id in [main_hub_id, tenant_cfg.get("admin_proof_group_id"), tenant_cfg.get("proof_archive_id")]:
+    if not main_hub_id:
         return
 
     category_name = post.chat.title if post.chat.title else "Vault Content"
@@ -1541,7 +1557,12 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
             default_label = f"Item {file_num}"
 
         caption_title = extracted_text.split("\n")[0] if extracted_text else default_label
-        direct_link = f"https://t.me/c/{clean_chat_id}/{thread_id}/{post.message_id}" if thread_id else f"https://t.me/c/{clean_chat_id}/{post.message_id}"
+        
+        # Build direct link supporting both public channel usernames (e.g., A_TOOLSx2) and private channel IDs
+        if post.chat.username:
+            direct_link = f"https://t.me/{post.chat.username}/{thread_id}/{post.message_id}" if thread_id else f"https://t.me/{post.chat.username}/{post.message_id}"
+        else:
+            direct_link = f"https://t.me/c/{clean_chat_id}/{thread_id}/{post.message_id}" if thread_id else f"https://t.me/c/{clean_chat_id}/{post.message_id}"
 
         item_info = {
             "type": item_type,
