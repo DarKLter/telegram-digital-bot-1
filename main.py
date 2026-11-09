@@ -1293,6 +1293,10 @@ async def payment_option_selected(update: Update, context: ContextTypes.DEFAULT_
     await query.edit_message_text(instructions_text, parse_mode="Markdown")
 
 async def handle_photo_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    if not msg or msg.chat.type != "private":
+        return
+
     user = update.message.from_user
     photo_file_id = update.message.photo[-1].file_id
 
@@ -1488,19 +1492,22 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not post:
         return
 
-    # 1. Ignore posts sent directly by bots
+    # 1. Ignore posts sent directly by bots or by the bot itself
     if (post.from_user and post.from_user.is_bot) or getattr(post, "via_bot", None):
+        return
+    if post.sender_chat and post.sender_chat.id == context.bot.id:
         return
 
     extracted_text = post.text or post.caption or ""
 
-    # 2. STRICT BOT MESSAGE / LOOP PREVENTION: Detect bot index outputs (essential for channel posts where from_user is None)
+    # 2. STRICT BOT MESSAGE / LOOP PREVENTION: Detect bot index outputs
     bot_index_markers = [
-        "📌 **", "🔄 **", "👉 _", "INDEXED VAULT FILE", "📁 **Category:",
+        "📌 **", "🔄 **", "👉 _", "INDEXED VAULT FILE", "📁 **Category:", "📖 **Module:",
         "🎬 **#", "📚 **#", "📦 **#", "💻 **#", "🖼️ **#", "🎵 **#", "🎞️ **#",
         "✅ **SUCCESS", "🤖 **Digital", "📥 **NEW RECEIPT", "STATUS:", "💳 **CURRENT",
         "⚙️ **FULL DM", "👤 **PRIMARY", "🛠️ **ADMIN CONTROL", "📋 **YOUR VAULT", "🗑️ Chat **unbound",
-        "Click the link above to jump directly", "MASTER BUNDLE:", "TELEGRAM JUMP LINK INSPECTOR"
+        "Click the link above to jump directly", "MASTER BUNDLE:", "TELEGRAM JUMP LINK INSPECTOR",
+        "NEW MODULE ADDED", "RE-OPENED MODULE"
     ]
     if any(marker in extracted_text for marker in bot_index_markers):
         return
@@ -1514,7 +1521,7 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         a_id = str(t_data.get("admin_proof_group_id", 0))
         p_id = str(t_data.get("proof_archive_id", 0))
 
-        if chat_id_str in [h_id, a_id, p_id] or chat_id in [t_data.get("main_hub_id"), t_data.get("admin_proof_group_id"), t_data.get("proof_archive_id")]:
+        if chat_id_str in [h_id, a_id, p_id, "0"] or chat_id in [t_data.get("main_hub_id"), t_data.get("admin_proof_group_id"), t_data.get("proof_archive_id"), 0]:
             return
 
     owner_id, tenant_cfg = get_tenant_by_chat(chat_id)
@@ -1555,6 +1562,11 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         raw_title = post.text.strip()
         if raw_title.startswith("/"):
             return
+
+        # In groups, only process text titles if posted by an admin/owner to avoid chat message spam
+        if post.chat.type in ["group", "supergroup"]:
+            if not await is_admin_or_owner(update, context):
+                return
 
         norm_key = normalize_title(raw_title)
         VAULT_STATE[chat_key]["active_course"] = norm_key
@@ -2006,9 +2018,12 @@ loop.run_until_complete(bot_app.start())
 
 @app.route(f"/{ACTIVE_BOT_TOKEN}", methods=["POST"])
 def webhook():
-    json_data = request.get_json(force=True)
-    update = Update.de_json(data=json_data, bot=bot_app.bot)
-    loop.run_until_complete(bot_app.process_update(update))
+    try:
+        json_data = request.get_json(force=True)
+        update = Update.de_json(data=json_data, bot=bot_app.bot)
+        loop.run_until_complete(bot_app.process_update(update))
+    except Exception as e:
+        logger.error(f"Error processing update: {e}")
     return jsonify({"status": "ok"}), 200
 
 @app.route("/", methods=["GET"])
