@@ -129,7 +129,7 @@ def load_state():
         try:
             with open(STATE_FILE, "r") as f:
                 data = json.load(f)
-                return {int(k): v for k, v in data.items()}
+                return {int(k) if k.lstrip('-').isdigit() else k: v for k, v in data.items()}
         except Exception as e:
             logger.error(f"Error loading state file: {e}")
             return {}
@@ -176,7 +176,6 @@ async def is_admin_or_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     user = update.effective_user
     chat = update.effective_chat
 
-    # In Telegram channels, channel posts do not have an effective_user (user is None).
     if not user:
         if chat and chat.type in ["channel", "group", "supergroup"]:
             return True
@@ -205,13 +204,12 @@ async def is_admin_or_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     return False
 
-# ================= ENHANCED MEMBER HELP COMMAND & USER ONBOARDING =================
+# ================= MEMBER HELP COMMAND & USER ONBOARDING =================
 
 async def member_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Detailed member help command explaining how to buy, submit receipts, and access vaults."""
     msg = update.effective_message
     user = update.effective_user
-    if not msg or not user:
+    if not msg:
         return
 
     is_admin = await is_admin_or_owner(update, context)
@@ -227,26 +225,28 @@ async def member_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
 
+    user_id = user.id if user else 0
     owner_id, tenant_cfg = get_tenant_by_chat(msg.chat.id) if msg.chat else (None, None)
     if not tenant_cfg:
-        tenant_cfg = get_tenant_config(user.id)
+        tenant_cfg = get_tenant_config(user_id)
 
     shop_name = tenant_cfg.get("shop_name", "Digital Vault Store")
     template = tenant_cfg["messages"].get("help", DEFAULT_TENANT_CONFIG["messages"]["help"])
-    help_text = template.replace("{name}", user.full_name).replace("{shop_name}", shop_name)
+    full_name = user.full_name if user else "Member"
+    help_text = template.replace("{name}", full_name).replace("{shop_name}", shop_name)
 
     keyboard = [
-        [InlineKeyboardButton("🛒 Start Buying & Checkout Now", callback_data=f"mode_customer_{tenant_cfg.get('primary_owner_id', user.id)}")],
+        [InlineKeyboardButton("🛒 Start Buying & Checkout Now", callback_data=f"mode_customer_{tenant_cfg.get('primary_owner_id', user_id)}")],
     ]
-    if is_admin:
-        keyboard.append([InlineKeyboardButton("⚙️ Manager Setup Wizard", callback_data=f"setup_main_{user.id}")])
+    if is_admin and user_id:
+        keyboard.append([InlineKeyboardButton("⚙️ Manager Setup Wizard", callback_data=f"setup_main_{user_id}")])
 
     await msg.reply_text(help_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     user = update.effective_user
-    if not msg or not user:
+    if not msg:
         return
 
     is_admin = await is_admin_or_owner(update, context)
@@ -262,18 +262,20 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    tenant_cfg = get_tenant_config(user.id)
+    user_id = user.id if user else 0
+    tenant_cfg = get_tenant_config(user_id)
     shop_name = tenant_cfg.get("shop_name", "Digital Vault Store")
+    full_name = user.full_name if user else "Member"
 
     keyboard = [
-        [InlineKeyboardButton("🛒 Browse Store & Buy Access", callback_data=f"mode_customer_{user.id}")],
-        [InlineKeyboardButton("📖 Read How to Buy (/help)", callback_data=f"show_help_cb_{user.id}")],
+        [InlineKeyboardButton("🛒 Browse Store & Buy Access", callback_data=f"mode_customer_{user_id}")],
+        [InlineKeyboardButton("📖 Read How to Buy (/help)", callback_data=f"show_help_cb_{user_id}")],
     ]
     if is_admin or msg.chat.type == "private":
-        keyboard.append([InlineKeyboardButton("⚙️ Setup & Manage My Own Vault / Groups", callback_data=f"setup_main_{user.id}")])
+        keyboard.append([InlineKeyboardButton("⚙️ Setup & Manage My Own Vault / Groups", callback_data=f"setup_main_{user_id}")])
 
     welcome_text = (
-        f"👋 **Welcome to {shop_name}, {user.full_name}!**\n\n"
+        f"👋 **Welcome to {shop_name}, {full_name}!**\n\n"
         "How would you like to proceed?\n\n"
         "• Click **Browse Store** to view available payment methods and buy access.\n"
         "• Click **Read How to Buy** for step-by-step instructions.\n"
@@ -375,7 +377,6 @@ async def handle_setup_callbacks(update: Update, context: ContextTypes.DEFAULT_T
     await query.answer()
     user = query.from_user
     data = query.data
-
     tenant_cfg = get_tenant_config(user.id)
 
     if data.startswith("setup_rooms"):
@@ -729,12 +730,12 @@ async def handle_new_chat_members(update: Update, context: ContextTypes.DEFAULT_
         )
         await msg.reply_text(full_welcome_text, parse_mode="Markdown")
 
-# ================= TELEGRAM JUMP LINK INSPECTOR FOR REAL OWNER =================
+# ================= TELEGRAM JUMP LINK INSPECTOR =================
 
 async def open_link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     user = update.effective_user
-    if not msg or not user:
+    if not msg:
         return
 
     if not await is_admin_or_owner(update, context):
@@ -742,7 +743,6 @@ async def open_link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = msg.text or ""
-    # Support both private t.me/c/12345/45 and public t.me/username/45 links
     pattern = r"https://t\.me/(?:c/(\d+)|([a-zA-Z0-9_]+))/(?:(\d+)/)?(\d+)"
     links = re.findall(pattern, text)
 
@@ -753,7 +753,7 @@ async def open_link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not links:
         await msg.reply_text(
             "⚠️ **Usage:** Send or paste a Telegram jump link, e.g.:\n"
-            "`/openlink https://t.me/c/123456789/45` or `https://t.me/channel_username/45`\n"
+            "`/openlink https://t.me/c/123456789/45` or `https://t.me/A_TOOLSx2/45`\n"
             "or paste the link directly in a private DM with the bot!",
             parse_mode="Markdown"
         )
@@ -877,7 +877,8 @@ async def handle_vault_browser_callback(update: Update, context: ContextTypes.DE
     await query.answer()
     data = query.data
     if data.startswith("browsechat_"):
-        chat_id = int(data.replace("browsechat_", ""))
+        chat_id_raw = data.replace("browsechat_", "")
+        chat_id = int(chat_id_raw) if chat_id_raw.lstrip('-').isdigit() else chat_id_raw
         chat_data = VAULT_STATE.get(chat_id, {})
         cat_name = chat_data.get("category_name", "Vault")
         courses = chat_data.get("courses", {})
@@ -897,7 +898,8 @@ async def handle_vault_browser_callback(update: Update, context: ContextTypes.DE
 
     elif data.startswith("browsetit_"):
         parts = data.split("_", 2)
-        chat_id = int(parts[1])
+        chat_id_raw = parts[1]
+        chat_id = int(chat_id_raw) if chat_id_raw.lstrip('-').isdigit() else chat_id_raw
         short_key = parts[2]
         chat_data = VAULT_STATE.get(chat_id, {})
         courses = chat_data.get("courses", {})
@@ -1056,75 +1058,6 @@ async def set_proof_archive_command(update: Update, context: ContextTypes.DEFAUL
         f"👤 **Vault Owner ID:** `{owner_id}` ({owner_name})",
         parse_mode="Markdown",
         disable_web_page_preview=True
-    )
-
-async def set_admin_group_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.effective_message
-    user = update.effective_user
-    chat = update.effective_chat
-    if not msg or not chat:
-        return
-
-    if not await is_admin_or_owner(update, context):
-        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
-        return
-
-    owner_id = user.id if user else (GLOBAL_CONFIG.get("chat_tenant_map", {}).get(str(chat.id)) or SUPER_ADMIN_IDS[0])
-    tenant_cfg = get_tenant_config(owner_id)
-    chat_str = str(chat.id)
-    args = [a.lower() for a in context.args] if context.args else []
-
-    if any(kw in args for kw in ["remove", "clear", "unset", "off", "del"]) or (tenant_cfg.get("admin_proof_group_id") == chat.id and not args):
-        tenant_cfg["admin_proof_group_id"] = 0
-        GLOBAL_CONFIG.get("chat_tenant_map", {}).pop(chat_str, None)
-        save_config(GLOBAL_CONFIG)
-        await msg.reply_text("🗑️ Group **unbound / removed** as your Admin Verification Group!", parse_mode="Markdown")
-        return
-
-    tenant_cfg["admin_proof_group_id"] = chat.id
-    GLOBAL_CONFIG.setdefault("chat_tenant_map", {})[chat_str] = owner_id
-    save_config(GLOBAL_CONFIG)
-
-    owner_name = user.full_name if user else "Admin"
-    await msg.reply_text(
-        f"✅ **SUCCESS!** Current group (`{chat.id}`) registered as **YOUR ADMIN VERIFICATION GROUP**!\n"
-        f"👤 **Vault Owner ID:** `{owner_id}` ({owner_name})\n\n"
-        "💡 _Receipt screenshot submissions from your customers will be forwarded here for approval!_",
-        parse_mode="Markdown"
-    )
-
-async def set_proof_archive_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.effective_message
-    user = update.effective_user
-    chat = update.effective_chat
-    if not msg or not chat:
-        return
-
-    if not await is_admin_or_owner(update, context):
-        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
-        return
-
-    owner_id = user.id if user else (GLOBAL_CONFIG.get("chat_tenant_map", {}).get(str(chat.id)) or SUPER_ADMIN_IDS[0])
-    tenant_cfg = get_tenant_config(owner_id)
-    chat_str = str(chat.id)
-    args = [a.lower() for a in context.args] if context.args else []
-
-    if any(kw in args for kw in ["remove", "clear", "unset", "off", "del"]) or (tenant_cfg.get("proof_archive_id") == chat.id and not args):
-        tenant_cfg["proof_archive_id"] = 0
-        GLOBAL_CONFIG.get("chat_tenant_map", {}).pop(chat_str, None)
-        save_config(GLOBAL_CONFIG)
-        await msg.reply_text("🗑️ Chat **unbound / removed** as your Proof Archive!", parse_mode="Markdown")
-        return
-
-    tenant_cfg["proof_archive_id"] = chat.id
-    GLOBAL_CONFIG.setdefault("chat_tenant_map", {})[chat_str] = owner_id
-    save_config(GLOBAL_CONFIG)
-
-    owner_name = user.full_name if user else "Admin"
-    await msg.reply_text(
-        f"✅ **SUCCESS!** Current chat (`{chat.id}`) registered as **YOUR PROOF ARCHIVE**!\n"
-        f"👤 **Vault Owner ID:** `{owner_id}` ({owner_name})",
-        parse_mode="Markdown"
     )
 
 async def handle_admin_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1355,7 +1288,6 @@ async def handle_photo_receipt(update: Update, context: ContextTypes.DEFAULT_TYP
     user = update.message.from_user
     photo_file_id = update.message.photo[-1].file_id
 
-    # Retrieve active store owner ID from user session or tenant mapping
     owner_id = context.user_data.get("active_owner_id")
     if not owner_id:
         chat_owner_id, tenant_cfg = get_tenant_by_chat(update.effective_chat.id)
@@ -1365,7 +1297,6 @@ async def handle_photo_receipt(update: Update, context: ContextTypes.DEFAULT_TYP
     admin_group_id = tenant_cfg.get("admin_proof_group_id")
 
     if not admin_group_id:
-        # Fallback to check if any super admin has an admin verification group set
         for t_id, t_data in GLOBAL_CONFIG.get("tenants", {}).items():
             if t_data.get("admin_proof_group_id"):
                 admin_group_id = t_data.get("admin_proof_group_id")
@@ -1549,18 +1480,19 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not post:
         return
 
-    # Ignore posts sent by bots or via bot
+    # 1. Ignore posts sent directly by bots
     if (post.from_user and post.from_user.is_bot) or getattr(post, "via_bot", None):
         return
 
     extracted_text = post.text or post.caption or ""
 
-    # Prevent recursive indexing loops by ignoring any messages generated by the bot's indexer or commands
+    # 2. STRICT BOT MESSAGE / LOOP PREVENTION: Detect bot index outputs (essential for channel posts where from_user is None)
     bot_index_markers = [
         "📌 **", "🔄 **", "👉 _", "INDEXED VAULT FILE", "📁 **Category:",
         "🎬 **#", "📚 **#", "📦 **#", "💻 **#", "🖼️ **#", "🎵 **#", "🎞️ **#",
         "✅ **SUCCESS", "🤖 **Digital", "📥 **NEW RECEIPT", "STATUS:", "💳 **CURRENT",
-        "⚙️ **FULL DM", "👤 **PRIMARY", "🛠️ **ADMIN CONTROL", "📋 **YOUR VAULT", "🗑️ Chat **unbound"
+        "⚙️ **FULL DM", "👤 **PRIMARY", "🛠️ **ADMIN CONTROL", "📋 **YOUR VAULT", "🗑️ Chat **unbound",
+        "Click the link above to jump directly", "MASTER BUNDLE:", "TELEGRAM JUMP LINK INSPECTOR"
     ]
     if any(marker in extracted_text for marker in bot_index_markers):
         return
@@ -1568,18 +1500,17 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = post.chat_id
     chat_id_str = str(chat_id)
 
-    # STRICT ROOM GUARD: Prevent indexing loop/spamming in Main Hub, Admin Group, or Proof Archive for ALL tenants
+    # 3. STRICT ROOM GUARD: Prevent indexing loop in Main Hub, Admin Group, or Proof Archive for ALL tenants
     for t_data in GLOBAL_CONFIG.get("tenants", {}).values():
-        h_id = t_data.get("main_hub_id")
-        a_id = t_data.get("admin_proof_group_id")
-        p_id = t_data.get("proof_archive_id")
+        h_id = str(t_data.get("main_hub_id", 0))
+        a_id = str(t_data.get("admin_proof_group_id", 0))
+        p_id = str(t_data.get("proof_archive_id", 0))
 
-        if chat_id in [h_id, a_id, p_id] or chat_id_str in [str(h_id), str(a_id), str(p_id)]:
+        if chat_id_str in [h_id, a_id, p_id] or chat_id in [t_data.get("main_hub_id"), t_data.get("admin_proof_group_id"), t_data.get("proof_archive_id")]:
             return
 
     owner_id, tenant_cfg = get_tenant_by_chat(chat_id)
     if not tenant_cfg:
-        # Fallback to check if chat installer exists or assign default tenant
         chat_map = GLOBAL_CONFIG.get("chat_tenant_map", {})
         if chat_id_str in chat_map:
             owner_id = chat_map[chat_id_str]
@@ -1595,41 +1526,14 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
     main_hub_id = tenant_cfg.get("main_hub_id")
-    if not main_hub_id or chat_id == main_hub_id or str(chat_id) == str(main_hub_id):
-        return
-
-    chat_id = post.chat_id
-
-    # Prevent indexing loop / spamming in Main Hub, Admin Group, or Proof Archive for ALL tenants
-    for t_data in GLOBAL_CONFIG.get("tenants", {}).values():
-        if chat_id in [t_data.get("main_hub_id"), t_data.get("admin_proof_group_id"), t_data.get("proof_archive_id")]:
-            return
-
-    owner_id, tenant_cfg = get_tenant_by_chat(chat_id)
-    if not tenant_cfg:
-        # Fallback to check if chat installer exists or assign default tenant
-        chat_map = GLOBAL_CONFIG.get("chat_tenant_map", {})
-        if str(chat_id) in chat_map:
-            owner_id = chat_map[str(chat_id)]
-            tenant_cfg = get_tenant_config(owner_id)
-        else:
-            tenants = GLOBAL_CONFIG.get("tenants", {})
-            if tenants:
-                owner_id = int(list(tenants.keys())[0])
-                tenant_cfg = tenants[str(owner_id)]
-                GLOBAL_CONFIG.setdefault("chat_tenant_map", {})[str(chat_id)] = owner_id
-                save_config(GLOBAL_CONFIG)
-            else:
-                return
-
-    main_hub_id = tenant_cfg.get("main_hub_id")
-    if not main_hub_id or chat_id == main_hub_id:
+    if not main_hub_id or str(chat_id) == str(main_hub_id):
         return
 
     category_name = post.chat.title if post.chat.title else "Vault Content"
-    clean_chat_id = str(chat_id).replace("-100", "")
+    clean_chat_id = chat_id_str.replace("-100", "")
     thread_id = getattr(post, "message_thread_id", None)
 
+    # Store channel record using integer chat_id or string key
     chat_key = chat_id
     if chat_key not in VAULT_STATE:
         VAULT_STATE[chat_key] = {"category_name": category_name, "active_course": "General Library", "courses": {}}
@@ -1639,7 +1543,7 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     has_media = bool(post.video or post.document or post.audio or post.photo or post.animation)
 
     # CASE 1: Pure Text Post - Declared Module Header
-    if (post.text and not has_media) or (post.forward_origin and post.text and not has_media):
+    if (post.text and not has_media) or (getattr(post, "forward_origin", None) and post.text and not has_media):
         raw_title = post.text.strip()
         if raw_title.startswith("/"):
             return
@@ -1714,7 +1618,7 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         caption_title = extracted_text.split("\n")[0] if extracted_text else default_label
         
-        # Build direct link supporting both public channel usernames (e.g., A_TOOLSx2) and private channel IDs
+        # Build direct link supporting public usernames (e.g. A_TOOLSx2) and private channel IDs
         if post.chat.username:
             direct_link = f"https://t.me/{post.chat.username}/{thread_id}/{post.message_id}" if thread_id else f"https://t.me/{post.chat.username}/{post.message_id}"
         else:
@@ -1842,7 +1746,8 @@ async def handle_del_index_callback(update: Update, context: ContextTypes.DEFAUL
     await query.answer()
 
     parts = query.data.split("_", 2)
-    chat_id = int(parts[1])
+    chat_id_raw = parts[1]
+    chat_id = int(chat_id_raw) if chat_id_raw.lstrip('-').isdigit() else chat_id_raw
     short_key = parts[2]
 
     if chat_id in VAULT_STATE:
@@ -1982,7 +1887,7 @@ async def handle_promotion_callback(update: Update, context: ContextTypes.DEFAUL
         await query.edit_message_text("❌ Promotion cancelled.")
         return
 
-    target_chats = list(VAULT_STATE.keys()) if target == "ALL" else [int(target)]
+    target_chats = list(VAULT_STATE.keys()) if target == "ALL" else [int(target) if target.lstrip('-').isdigit() else target]
     sent_count = 0
 
     for c_id in target_chats:
