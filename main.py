@@ -111,6 +111,14 @@ def load_config():
                     config["bot_token"] = DEFAULT_GLOBAL_CONFIG["bot_token"]
                 if "settings" not in config:
                     config["settings"] = DEFAULT_GLOBAL_CONFIG["settings"]
+
+                # Automatically sanitize legacy channel join or link lock strings from loaded config
+                for t_id, t_cfg in config.get("tenants", {}).items():
+                    msgs = t_cfg.get("messages", {})
+                    for m_key, m_val in list(msgs.items()):
+                        if "A_TOOLSx2" in m_val or "must join our channel" in m_val.lower():
+                            msgs[m_key] = DEFAULT_TENANT_CONFIG["messages"].get(m_key, "")
+
                 return config
         except Exception as e:
             logger.error(f"Error loading config file: {e}")
@@ -753,7 +761,7 @@ async def open_link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not links:
         await msg.reply_text(
             "⚠️ **Usage:** Send or paste a Telegram jump link, e.g.:\n"
-            "`/openlink https://t.me/c/123456789/45` or `https://t.me/A_TOOLSx2/45`\n"
+            "`/openlink https://t.me/c/123456789/45` or `https://t.me/my_vault_channel/45`\n"
             "or paste the link directly in a private DM with the bot!",
             parse_mode="Markdown"
         )
