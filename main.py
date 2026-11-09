@@ -1009,7 +1009,41 @@ async def set_proof_archive_command(update: Update, context: ContextTypes.DEFAUL
         parse_mode="Markdown"
     )
 
-async def set_admin_group_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_admin_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data.split("_")
+    action = data[0]
+    buyer_id = int(data[1])
+    owner_id = int(data[2]) if len(data) > 2 else query.from_user.id
+
+    tenant_cfg = get_tenant_config(owner_id)
+    main_hub_id = tenant_cfg.get("main_hub_id")
+    proof_archive_id = tenant_cfg.get("proof_archive_id")
+
+    if action == "approve":
+        if not main_hub_id:
+            await query.message.reply_text("⚠️ **Error:** Main Directory Hub is not set yet! Run `/sethub` in your Main Hub group/channel.")
+            return
+
+        try:
+            invite_link = await context.bot.create_chat_invite_link(chat_id=main_hub_id, member_limit=1)
+            await context.bot.send_message(chat_id=buyer_id, text=f"🎉 **Payment Approved!**\n\nWelcome! Click your single-use invite link to join the Main Hub:\n{invite_link.invite_link}")
+            await query.edit_message_caption(caption=f"{query.message.caption}\n\nSTATUS: ✅ **APPROVED BY ADMIN**")
+
+            if proof_archive_id:
+                try:
+                    await context.bot.forward_message(chat_id=proof_archive_id, from_chat_id=query.message.chat_id, message_id=query.message.message_id)
+                except Exception as p_err:
+                    logger.error(f"Failed to forward proof to archive {proof_archive_id}: {p_err}")
+        except Exception as e:
+            logger.error(f"Approval error: {e}")
+            await query.message.reply_text(f"❌ Approval error: {e}\n(Make sure the bot is an Admin in your Main Hub and has 'Invite Users via Link' permission!)")
+    elif action == "reject":
+        await context.bot.send_message(chat_id=buyer_id, text="❌ **Verification failed.** Please check your reference number and submit a clear screenshot.")
+        await query.edit_message_caption(caption=f"{query.message.caption}\n\nSTATUS: ❌ **REJECTED BY ADMIN**")
+
     msg = update.effective_message
     user = update.effective_user
     chat = update.effective_chat
@@ -1540,6 +1574,25 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=main_hub_id, text=lesson_entry, parse_mode="Markdown", disable_web_page_preview=True)
         except Exception as e:
             logger.error(f"Failed to post index entry to main hub {main_hub_id}: {e}")
+
+# ================= ADVANCED MODULE GROUPING & RENAMING =================
+
+async def group_module_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    user = update.effective_user
+    if not msg or not user:
+        return
+
+    if not await is_admin_or_owner(update, context):
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
+        return
+
+    if not context.args:
+        await msg.reply_text("⚠️ **Usage:** `/groupmodule Game Dev Master Bundle | Lesson 1, Lesson 2`", parse_mode="Markdown")
+        return
+
+    payload = " ".join(context.args)
+    if "|" not in payload:
         await msg.reply_text("❌ Please use `|` to separate the title from included items.")
         return
 
