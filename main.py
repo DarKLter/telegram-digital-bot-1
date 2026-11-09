@@ -753,7 +753,7 @@ async def open_link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not links:
         await msg.reply_text(
             "⚠️ **Usage:** Send or paste a Telegram jump link, e.g.:\n"
-            "`/openlink https://t.me/c/123456789/45` or `https://t.me/A_TOOLSx2/45`\n"
+            "`/openlink https://t.me/c/123456789/45` or `https://t.me/channel_username/45`\n"
             "or paste the link directly in a private DM with the bot!",
             parse_mode="Markdown"
         )
@@ -961,11 +961,101 @@ async def set_hub_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_config(GLOBAL_CONFIG)
 
     owner_name = user.full_name if user else "Admin"
+    clean_chat_id = str(chat.id).replace("-100", "")
+    room_link = f"https://t.me/{chat.username}" if chat.username else f"https://t.me/c/{clean_chat_id}"
+
     await msg.reply_text(
-        f"✅ **SUCCESS!** Current chat (`{chat.id}`) registered as **YOUR MAIN HUB DIRECTORY**!\n"
+        f"✅ **SUCCESS!** Current chat registered as **YOUR MAIN HUB DIRECTORY**!\n\n"
+        f"📍 **Room Name:** `{chat.title if chat.title else 'Main Hub'}`\n"
+        f"🆔 **Room ID:** `{chat.id}`\n"
+        f"🔗 **Room Link:** [{room_link}]({room_link})\n"
         f"👤 **Vault Owner ID:** `{owner_id}` ({owner_name})\n\n"
         "💡 _To unbind later, type `/sethub remove` or `/sethub` again in this chat._",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        disable_web_page_preview=True
+    )
+
+async def set_admin_group_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    if not msg or not chat:
+        return
+
+    if not await is_admin_or_owner(update, context):
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
+        return
+
+    owner_id = user.id if user else (GLOBAL_CONFIG.get("chat_tenant_map", {}).get(str(chat.id)) or SUPER_ADMIN_IDS[0])
+    tenant_cfg = get_tenant_config(owner_id)
+    chat_str = str(chat.id)
+    args = [a.lower() for a in context.args] if context.args else []
+
+    if any(kw in args for kw in ["remove", "clear", "unset", "off", "del"]) or (tenant_cfg.get("admin_proof_group_id") == chat.id and not args):
+        tenant_cfg["admin_proof_group_id"] = 0
+        GLOBAL_CONFIG.get("chat_tenant_map", {}).pop(chat_str, None)
+        save_config(GLOBAL_CONFIG)
+        await msg.reply_text("🗑️ Group **unbound / removed** as your Admin Verification Group!", parse_mode="Markdown")
+        return
+
+    tenant_cfg["admin_proof_group_id"] = chat.id
+    GLOBAL_CONFIG.setdefault("chat_tenant_map", {})[chat_str] = owner_id
+    save_config(GLOBAL_CONFIG)
+
+    owner_name = user.full_name if user else "Admin"
+    clean_chat_id = str(chat.id).replace("-100", "")
+    room_link = f"https://t.me/{chat.username}" if chat.username else f"https://t.me/c/{clean_chat_id}"
+
+    await msg.reply_text(
+        f"✅ **SUCCESS!** Current group registered as **YOUR ADMIN VERIFICATION GROUP**!\n\n"
+        f"📍 **Group Name:** `{chat.title if chat.title else 'Admin Review Group'}`\n"
+        f"🆔 **Group ID:** `{chat.id}`\n"
+        f"🔗 **Group Link:** [{room_link}]({room_link})\n"
+        f"👤 **Vault Owner ID:** `{owner_id}` ({owner_name})\n\n"
+        "💡 _Receipt screenshot submissions from your customers will be forwarded here for approval!_",
+        parse_mode="Markdown",
+        disable_web_page_preview=True
+    )
+
+async def set_proof_archive_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    if not msg or not chat:
+        return
+
+    if not await is_admin_or_owner(update, context):
+        await msg.reply_text("⛔ **Access Denied:** Regular members can only use `/start` and `/help`.\nAdministrator permission required.", parse_mode="Markdown")
+        return
+
+    owner_id = user.id if user else (GLOBAL_CONFIG.get("chat_tenant_map", {}).get(str(chat.id)) or SUPER_ADMIN_IDS[0])
+    tenant_cfg = get_tenant_config(owner_id)
+    chat_str = str(chat.id)
+    args = [a.lower() for a in context.args] if context.args else []
+
+    if any(kw in args for kw in ["remove", "clear", "unset", "off", "del"]) or (tenant_cfg.get("proof_archive_id") == chat.id and not args):
+        tenant_cfg["proof_archive_id"] = 0
+        GLOBAL_CONFIG.get("chat_tenant_map", {}).pop(chat_str, None)
+        save_config(GLOBAL_CONFIG)
+        await msg.reply_text("🗑️ Chat **unbound / removed** as your Proof Archive!", parse_mode="Markdown")
+        return
+
+    tenant_cfg["proof_archive_id"] = chat.id
+    GLOBAL_CONFIG.setdefault("chat_tenant_map", {})[chat_str] = owner_id
+    save_config(GLOBAL_CONFIG)
+
+    owner_name = user.full_name if user else "Admin"
+    clean_chat_id = str(chat.id).replace("-100", "")
+    room_link = f"https://t.me/{chat.username}" if chat.username else f"https://t.me/c/{clean_chat_id}"
+
+    await msg.reply_text(
+        f"✅ **SUCCESS!** Current chat registered as **YOUR PROOF ARCHIVE**!\n\n"
+        f"📍 **Archive Name:** `{chat.title if chat.title else 'Proof Archive'}`\n"
+        f"🆔 **Archive ID:** `{chat.id}`\n"
+        f"🔗 **Archive Link:** [{room_link}]({room_link})\n"
+        f"👤 **Vault Owner ID:** `{owner_id}` ({owner_name})",
+        parse_mode="Markdown",
+        disable_web_page_preview=True
     )
 
 async def set_admin_group_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1465,21 +1555,47 @@ async def auto_index_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     extracted_text = post.text or post.caption or ""
 
-    # Prevent recursive indexing loops by ignoring any messages generated by the bot's indexer
+    # Prevent recursive indexing loops by ignoring any messages generated by the bot's indexer or commands
     bot_index_markers = [
-        "📌 **NEW MODULE",
-        "🔄 **RE-OPENED MODULE",
-        "👉 _Click the link",
-        "INDEXED VAULT FILE",
-        "📁 **Category:",
-        "🎬 **#",
-        "📚 **#",
-        "📦 **#",
-        "💻 **#",
-        "🖼️ **#",
-        "🎵 **#"
+        "📌 **", "🔄 **", "👉 _", "INDEXED VAULT FILE", "📁 **Category:",
+        "🎬 **#", "📚 **#", "📦 **#", "💻 **#", "🖼️ **#", "🎵 **#", "🎞️ **#",
+        "✅ **SUCCESS", "🤖 **Digital", "📥 **NEW RECEIPT", "STATUS:", "💳 **CURRENT",
+        "⚙️ **FULL DM", "👤 **PRIMARY", "🛠️ **ADMIN CONTROL", "📋 **YOUR VAULT", "🗑️ Chat **unbound"
     ]
     if any(marker in extracted_text for marker in bot_index_markers):
+        return
+
+    chat_id = post.chat_id
+    chat_id_str = str(chat_id)
+
+    # STRICT ROOM GUARD: Prevent indexing loop/spamming in Main Hub, Admin Group, or Proof Archive for ALL tenants
+    for t_data in GLOBAL_CONFIG.get("tenants", {}).values():
+        h_id = t_data.get("main_hub_id")
+        a_id = t_data.get("admin_proof_group_id")
+        p_id = t_data.get("proof_archive_id")
+
+        if chat_id in [h_id, a_id, p_id] or chat_id_str in [str(h_id), str(a_id), str(p_id)]:
+            return
+
+    owner_id, tenant_cfg = get_tenant_by_chat(chat_id)
+    if not tenant_cfg:
+        # Fallback to check if chat installer exists or assign default tenant
+        chat_map = GLOBAL_CONFIG.get("chat_tenant_map", {})
+        if chat_id_str in chat_map:
+            owner_id = chat_map[chat_id_str]
+            tenant_cfg = get_tenant_config(owner_id)
+        else:
+            tenants = GLOBAL_CONFIG.get("tenants", {})
+            if tenants:
+                owner_id = int(list(tenants.keys())[0])
+                tenant_cfg = tenants[str(owner_id)]
+                GLOBAL_CONFIG.setdefault("chat_tenant_map", {})[chat_id_str] = owner_id
+                save_config(GLOBAL_CONFIG)
+            else:
+                return
+
+    main_hub_id = tenant_cfg.get("main_hub_id")
+    if not main_hub_id or chat_id == main_hub_id or str(chat_id) == str(main_hub_id):
         return
 
     chat_id = post.chat_id
