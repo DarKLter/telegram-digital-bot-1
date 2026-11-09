@@ -2137,6 +2137,16 @@ asyncio.set_event_loop(loop)
 loop.run_until_complete(bot_app.initialize())
 loop.run_until_complete(bot_app.start())
 
+# AUTO-REGISTER WEBHOOK WITH TELEGRAM ON RENDER DEPLOY
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
+if RENDER_EXTERNAL_URL:
+    webhook_target = f"{RENDER_EXTERNAL_URL.rstrip('/')}/{ACTIVE_BOT_TOKEN}"
+    try:
+        loop.run_until_complete(bot_app.bot.set_webhook(url=webhook_target))
+        logger.info(f"✅ Webhook successfully registered with Telegram: {webhook_target}")
+    except Exception as wh_err:
+        logger.error(f"⚠️ Webhook auto-registration warning: {wh_err}")
+
 @app.route(f"/{ACTIVE_BOT_TOKEN}", methods=["POST"])
 def webhook():
     json_data = request.get_json(force=True)
