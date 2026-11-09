@@ -96,30 +96,50 @@ DEFAULT_GLOBAL_CONFIG = {
 
 # ================= PERSISTENT STORAGE HELPERS =================
 
+def sanitize_config(config_dict):
+    """Recursively strip out legacy channel-lock / A_TOOLSx2 join messages from config."""
+    if isinstance(config_dict, dict):
+        cleaned = {}
+        for k, v in config_dict.items():
+            if isinstance(v, str):
+                if "A_TOOLSx2" in v or "must join" in v.lower():
+                    if k in DEFAULT_TENANT_CONFIG["messages"]:
+                        cleaned[k] = DEFAULT_TENANT_CONFIG["messages"][k]
+                    else:
+                        cleaned[k] = ""
+                else:
+                    cleaned[k] = v
+            elif isinstance(v, (dict, list)):
+                cleaned[k] = sanitize_config(v)
+            else:
+                cleaned[k] = v
+        return cleaned
+    elif isinstance(config_dict, list):
+        return [sanitize_config(item) for item in config_dict]
+    return config_dict
+
 def load_config():
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r") as f:
                 config = json.load(f)
-                if "tenants" not in config:
-                    config["tenants"] = {}
-                if "chat_tenant_map" not in config:
-                    config["chat_tenant_map"] = {}
-                if "super_admin_ids" not in config:
-                    config["super_admin_ids"] = SUPER_ADMIN_IDS
-                if "bot_token" not in config:
-                    config["bot_token"] = DEFAULT_GLOBAL_CONFIG["bot_token"]
-                if "settings" not in config:
-                    config["settings"] = DEFAULT_GLOBAL_CONFIG["settings"]
+                
+            config = sanitize_config(config)
 
-                # Automatically sanitize legacy channel join or link lock strings from loaded config
-                for t_id, t_cfg in config.get("tenants", {}).items():
-                    msgs = t_cfg.get("messages", {})
-                    for m_key, m_val in list(msgs.items()):
-                        if "A_TOOLSx2" in m_val or "must join our channel" in m_val.lower():
-                            msgs[m_key] = DEFAULT_TENANT_CONFIG["messages"].get(m_key, "")
+            if "tenants" not in config:
+                config["tenants"] = {}
+            if "chat_tenant_map" not in config:
+                config["chat_tenant_map"] = {}
+            if "super_admin_ids" not in config:
+                config["super_admin_ids"] = SUPER_ADMIN_IDS
+            if "bot_token" not in config:
+                config["bot_token"] = DEFAULT_GLOBAL_CONFIG["bot_token"]
+            if "settings" not in config:
+                config["settings"] = DEFAULT_GLOBAL_CONFIG["settings"]
 
-                return config
+            # Save cleaned config immediately to overwrite any bad data saved to disk
+            save_config(config)
+            return config
         except Exception as e:
             logger.error(f"Error loading config file: {e}")
             return DEFAULT_GLOBAL_CONFIG
@@ -167,7 +187,14 @@ def get_tenant_config(owner_id: int):
         new_tenant["primary_owner_id"] = owner_id
         tenants[owner_str] = new_tenant
         save_config(GLOBAL_CONFIG)
-    return tenants[owner_str]
+        
+    tenant_cfg = tenants[owner_str]
+    msgs = tenant_cfg.setdefault("messages", {})
+    for m_key, m_val in list(msgs.items()):
+        if not isinstance(m_val, str) or "A_TOOLSx2" in m_val or "must join" in m_val.lower():
+            msgs[m_key] = DEFAULT_TENANT_CONFIG["messages"].get(m_key, "")
+
+    return tenant_cfg
 
 def get_tenant_by_chat(chat_id: int):
     chat_str = str(chat_id)
@@ -240,6 +267,9 @@ async def member_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     shop_name = tenant_cfg.get("shop_name", "Digital Vault Store")
     template = tenant_cfg["messages"].get("help", DEFAULT_TENANT_CONFIG["messages"]["help"])
+    if "A_TOOLSx2" in template or "must join" in template.lower():
+        template = DEFAULT_TENANT_CONFIG["messages"]["help"]
+
     full_name = user.full_name if user else "Member"
     help_text = template.replace("{name}", full_name).replace("{shop_name}", shop_name)
 
